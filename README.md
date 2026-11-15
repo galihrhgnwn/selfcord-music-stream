@@ -125,8 +125,8 @@ Verified on this machine (Linux x64, Node 26, FFmpeg 9):
 - 720p30 H.264 + AAC render, layout verified through per-row pixel analysis
 - the encoder path `prepareStream` -> FFmpeg (libx264 + libopus + azmq) -> nut container -> node-av demux
 - the native modules `node-av`, `@snazzah/davey`, `node-datachannel`, `zeromq`, `sharp`
-- `test/commands-test.mjs`: 16/16 pass (command parser, aliases, channel filter, user whitelist, `w/sync`)
-- `test/cache-test.mjs`: slides are reused when the offset moves, while the output still changes to match the offset
+- the command layer (prefix parsing, aliases, channel filter, user whitelist, `w/sync`)
+- the slide cache: slides are reused when the offset moves, while the output still changes to match the offset
 - full song render: Tulus - Monokrom (28 lines, 194s) -> 2.0 MB, lyrics verified at 100s and 190s
 
 Not tested: Discord login, joining voice, and the WebRTC/DAVE handshake. That part needs your account token, so it is only proven once you run `node src/index.js serve`.
@@ -146,5 +146,4 @@ src/track.js     query -> track (fallback without Spotify credentials)
 src/resolve.js   track -> audio file (cache -> preview -> yt-dlp)
 src/ai.js        OpenAI-compatible client for w/help
 src/env.js       .env loader + credential status
-test/            command, cache, media path, lrclib, and frame analysis tests
 ```

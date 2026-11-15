@@ -9,12 +9,7 @@
     "serve": "node src/index.js serve",
     "build": "node src/index.js build",
     "play": "node src/index.js play",
-    "help": "node src/index.js help",
-    "test": "node test/commands-test.mjs && node test/cache-test.mjs && node test/lrclib-test.mjs",
-    "test:cmd": "node test/commands-test.mjs",
-    "test:cache": "node test/cache-test.mjs",
-    "test:lrclib": "node test/lrclib-test.mjs",
-    "test:media": "node test/media-path-test.mjs out/lyrics.mp4"
+    "help": "node src/index.js help"
   },
   "engines": {
     "node": ">=22.4.0"

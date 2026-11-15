@@ -1,8 +1,0 @@
-{
-  "token": null,
-  "song": { "title": "Monokrom", "artist": "Tulus" },
-  "audio": "../cache/audio/QqJ-Vp8mvbk.webm",
-  "video": { "width": 1280, "height": 720, "fps": 30 },
-  "accent": "8b5cf6",
-  "render": { "out": "../out/monokrom.mp4", "force": true }
-}

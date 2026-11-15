@@ -1,9 +1,0 @@
-[ti:A Fairly Long Sample Title So Wrapping Shows Up]
-[ar:Test Artist]
-[offset:0]
-[00:00.00]An opening line that is long enough to show the text wrapping inside the video frame
-[00:04.00]Second line
-[00:07.50]A third line that is also long enough to force the automatic font size fallback
-[00:12.00]Fourth line
-[00:16.00]Fifth line
-[00:20.00]Closing line
