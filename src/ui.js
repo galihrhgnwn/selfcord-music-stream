@@ -22,7 +22,7 @@ const require = createRequire(import.meta.url);
  *
  * The selfbot fork has no INTERACTION_CREATE gateway handler, so a click on a
  * menu we sent never reaches the process: the menu renders, the click does
- * nothing. We still send the menus, and the handler in commands.js runs the
+ * nothing. We still send the menu, and the handler in commands.js runs the
  * moment a build delivers the event (a fork with the handler, or a bot token).
  */
 export const COMPONENT_INTERACTIONS = (() => {
@@ -37,11 +37,6 @@ export const COMPONENT_INTERACTIONS = (() => {
 const trim = (value, max) => {
   const s = String(value ?? '').replace(/\s+/g, ' ').trim();
   return s.length > max ? `${s.slice(0, max - 1)}…` : s;
-};
-
-export const fmtDur = (sec) => {
-  const s = Math.max(0, Math.round(sec || 0));
-  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
 };
 
 /** Discord limits: 25 options, label/description/value 100 chars, placeholder 150. */
@@ -60,27 +55,6 @@ export function selectRow({ customId, placeholder, options, extra = {} }) {
     options: opts,
     ...extra,
   });
-}
-
-/** Grey out a menu once it has been used. */
-export function disableComponents(row) {
-  for (const c of row?.components || []) c.disabled = true;
-  return row;
-}
-
-/** Spotify results, value = the index into the stored result list. */
-export function searchMenu(results, channelId, { disabled = false } = {}) {
-  const row = selectRow({
-    customId: `search:${channelId}`,
-    placeholder: 'Pick a result to play',
-    options: results.map((t, i) => ({
-      label: `${t.title}${t.artist ? ` - ${t.artist}` : ''}`,
-      value: String(i),
-      description: t.duration ? fmtDur(t.duration) : undefined,
-    })),
-    extra: { disabled },
-  });
-  return row;
 }
 
 /** Help topics, value = the 1-based topic number. */

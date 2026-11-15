@@ -8,14 +8,26 @@ This is not a desktop capture: the lyrics are rendered into video frames (1280x7
 
 Every command is typed in any channel this account can read. If you are already in a voice channel, the song plays there.
 
-- `w/play <song title | spotify link | search result number>` (alias `w/p`) - find the song on Spotify, download the audio, fetch synced lyrics, then open Go Live.
-- `w/search <keywords>` (alias `w/s`) - show 6 Spotify results in a select menu; picking one plays it. The same list is reachable as `w/play 3`.
+- `w/play <song title | Spotify link>` (alias `w/p`) - play a song: resolve it, download the audio with yt-dlp, fetch synced lyrics, then open Go Live.
+  - a title plays the **most listened** match, so a shared title resolves to the version people actually listen to
+  - a Spotify **track** link plays exactly that track
+  - a Spotify **album** or **playlist** link queues the whole list and plays it in order (`commands.playlistLimit`, 30 by default)
 - `w/stop` (alias `w/leave`, `w/off`) - stop Go Live and leave the voice channel.
 - `w/sync <milliseconds>` - shift the lyric timing. `w/sync +500` when the lyrics are late, `w/sync -500` when they are early. Slides are cached, so this is only a re-mux (far faster than the first build) and the stream restarts from the beginning.
 - `w/help [topic number | question]` - without an argument: the list of help topics. With a number: that answer, no AI involved. With a question, or as a reply to the topic list in your own words: the AI works out the steps, and it only answers questions about this bot.
 - `w/listcmd` (alias `w/cmd`) - list the commands.
 
 The command list lives in one place: `src/features.js`. So `w/listcmd`, `w/help`, and the AI context always stay in sync.
+
+## How a title becomes a track
+
+`w/play tulus - monokrom` should not play a cover, a live take or a 10 hour loop, so two picks happen:
+
+- **Spotify decides the song.** A title returns several matches and the one with the highest Spotify `popularity` wins. The `w/play` argument is not a guess-by-first-result: with three results called "Monokrom" (live, studio, remix) the studio take wins.
+- **YouTube decides the audio.** `yt-dlp` lists the ten best matches with their view counts, matches whose length is more than 25% away from the Spotify duration are dropped first, and the most viewed survivor is downloaded. That removes the loop and teaser problem: a 10 hour upload with 990M views loses to the 48M view official upload once the length filter is applied. Without Spotify credentials the length filter is skipped, so the most viewed match wins outright.
+
+Links skip the guessing: a Spotify **track** link plays exactly that track, an **album** or **playlist** link queues every track in order (up to `commands.playlistLimit`, 30 by default). `w/stop` cancels the rest of the queue.
+
 
 ## How `w/help` works
 
@@ -27,14 +39,11 @@ Without `AI_API_URL` only the numbered topics work; `w/help <question>` then ans
 
 ## Select menus, and what a selfbot can receive
 
-Lists are sent as select menus: `w/help` with the topics, `w/search` with the results. `src/ui.js` builds them with `MessageActionRow` plus a `STRING_SELECT` component, the v13 shapes of what discord.js v14 calls `ActionRowBuilder` and `StringSelectMenuBuilder`. Labels, descriptions and values are trimmed to the API limits (25 options, 100 characters, 150 for the placeholder).
+The help topic list is sent as a select menu. `src/ui.js` builds it with `MessageActionRow` plus a `STRING_SELECT` component, the v13 shapes of what discord.js v14 calls `ActionRowBuilder` and `StringSelectMenuBuilder`. Labels, descriptions and values are trimmed to the API limits (25 options, 100 characters, 150 for the placeholder).
 
-A user account cannot receive a component click. Discord routes `MESSAGE_COMPONENT` interactions to the application that owns the message, and a plain user account owns no application: `@lng2004/discord.js-selfbot-v13` ships no `INTERACTION_CREATE` gateway handler, so the packet never becomes an `interactionCreate` event and the click fails on the clicker's side. The menu is therefore a display, and every list keeps a typed form that always works:
+A user account cannot receive a component click. Discord routes `MESSAGE_COMPONENT` interactions to the application that owns the message, and a plain user account owns no application: `@lng2004/discord.js-selfbot-v13` ships no `INTERACTION_CREATE` gateway handler, so the packet never becomes an `interactionCreate` event and the click fails on the clicker's side. The menu is therefore a display, and the same content is reachable by typing: `w/help 3` answers topic 3.
 
-- `w/help 3` answers topic 3
-- `w/play 3` plays result 3 of the last `w/search` in that channel
-
-The handler is wired anyway (`handleComponent` in `src/commands.js`, registered on `interactionCreate`): the moment a build does deliver the event (a fork with the gateway handler, or a bot token), picking from the menu plays the track or answers the topic with no other change. On startup the process logs one line when the build cannot deliver it.
+The handler is wired anyway (`handleComponent` in `src/commands.js`, registered on `interactionCreate`): the moment a build does deliver the event (a fork with the gateway handler, or a bot token), picking a topic answers it with no other change. On startup the process logs one line when the build cannot deliver it.
 
 ## Why it stays light and drift-free
 
@@ -72,7 +81,7 @@ Every credential is read from `.env` (see `.env.example`). No token or API key i
 
 ```
 DISCORD_TOKEN=            # Discord account token (selfbot)
-SPOTIFY_CLIENT_ID=        # for w/search and song metadata
+SPOTIFY_CLIENT_ID=        # for song search and metadata
 SPOTIFY_CLIENT_SECRET=
 AI_API_URL=               # OpenAI-compatible endpoint for w/help <question>
 AI_API_KEY=

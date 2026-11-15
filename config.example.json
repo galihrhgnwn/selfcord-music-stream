@@ -38,7 +38,8 @@
   "commands": {
     "prefix": "w/",
     "channels": [],
-    "allowOtherUsers": false
+    "allowOtherUsers": false,
+    "playlistLimit": 30
   },
 
   "cache": {

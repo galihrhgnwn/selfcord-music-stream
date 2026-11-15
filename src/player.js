@@ -19,6 +19,8 @@ export class Player {
     this.cfg = cfg;
     this.log = log;
     this.gen = 0;
+    /** Cancels a playlist run: w/stop bumps it, so the queue loop gives up. */
+    this.session = 0;
     this.guildId = cfg.guildId || null;
     this.state = {
       track: null,
@@ -176,6 +178,7 @@ export class Player {
     this.state.startedAt = Date.now();
     this.state.playing = true;
 
+    if (audio.match) this.log(`audio match: ${audio.match.id} (${audio.match.views} views)`);
     this.log(`Go Live: ${track.title} (${video.cached ? 'cache' : 'fresh build'}), lyric offset ${this.state.offsetMs}ms`);
     try {
       await playStream(output, this.streamer, {
@@ -199,8 +202,18 @@ export class Player {
     return { ok: true, duration: video.duration, lyrics: lyrics.lines.length, source: audio.source };
   }
 
+  /** Start of a new play request; anything still looping on an older token stops. */
+  newSession() {
+    return ++this.session;
+  }
+
+  isCurrent(token) {
+    return token === this.session;
+  }
+
   async stop({ leave = true } = {}) {
     this.gen++;
+    this.session++;
     this.state.playing = false;
     try {
       this.streamer.stopStream();

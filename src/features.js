@@ -8,15 +8,9 @@ export const PREFIX = 'w/';
 export const COMMANDS = [
   {
     name: 'w/play',
-    args: '<song title | spotify link>',
-    desc: 'Find a song, download its audio, then open Go Live in your voice channel with synced lyrics.',
+    args: '<song title | Spotify link>',
+    desc: 'Play a song: it finds the track, downloads the audio with yt-dlp, then opens Go Live in your voice channel with synced lyrics. A title picks the most listened match, a Spotify track link plays exactly that track, and an album or playlist link plays the whole list in order.',
     aliases: ['w/p'],
-  },
-  {
-    name: 'w/search',
-    args: '<keywords>',
-    desc: 'Show 6 Spotify search results in a select menu, pick one to play.',
-    aliases: ['w/s'],
   },
   {
     name: 'w/stop',
@@ -48,6 +42,9 @@ export const FEATURES = [
   'Discord selfbot (runs on a user account, not a bot token) that broadcasts Go Live into a voice channel.',
   'Go Live content: a 1280x720 lyric video that runs in sync with the song, while the audio is sent to the voice channel too.',
   'Song source: Spotify Web API search (client credentials). Metadata, cover art and duration come from Spotify.',
+  'One song, picked for you: a title returns several matches, and the most popular one (highest Spotify popularity) is played, so a title shared by several versions resolves to the one people listen to.',
+  'Spotify links: a track link plays that exact track, an album or playlist link queues every track and plays them in order (capped by commands.playlistLimit, 30 by default).',
+  'Audio match: yt-dlp lists the ten best YouTube matches and the most viewed one wins, after matches that are far from the Spotify duration are removed. Full audio always comes from yt-dlp, because the Spotify API cannot stream full tracks.',
   'Full audio is fetched with yt-dlp because the Spotify API does not allow streaming full tracks (DRM). An official 30 second preview is available through audioSource: "preview".',
   'Synced lyrics come from lrclib.net, or from a manual .lrc file when the song is not on lrclib.',
   'Drift-free sync: the audio and the lyric frames are encoded onto the same timeline and shipped in one stream, so they cannot slide apart.',
@@ -66,8 +63,8 @@ export const HELP_TOPICS = [
     a: 'Join a voice channel, then type `w/play <song title>`. The account joins the channel you are in, downloads the audio, renders the lyric video and opens Go Live. The first render of a song takes a few minutes (a 194s song took ~218s on the test machine); later plays of the same song reuse the cache.',
   },
   {
-    q: 'How do I look for a song before playing it?',
-    a: 'Type `w/search <keywords>`. You get 6 Spotify results with a duration. React with 1-6 to play one, or type `w/play <number>` to use the list again. React with `❌` to cancel.',
+    q: 'How do I make sure w/play picks the right version of a song?',
+    a: 'Type `w/play <artist> - <title>`. Spotify returns several matches and the bot plays the most popular one, so a shared title resolves to the version people actually listen to. The audio side does the same on YouTube: the ten best matches are compared and the most viewed one wins, after matches whose length is far from the Spotify duration are dropped. To skip guessing entirely, paste the Spotify link to the exact track, or to an album or playlist.',
   },
   {
     q: 'The lyrics are behind or ahead of the music',
@@ -78,8 +75,8 @@ export const HELP_TOPICS = [
     a: 'Type `w/stop` (aliases `w/leave`, `w/off`). The stream stops and the account leaves the voice channel. Set `stayInVoice: true` in `config.json` if you would rather keep it hanging around in the channel.',
   },
   {
-    q: 'w/search says Spotify is not configured',
-    a: 'Put `SPOTIFY_CLIENT_ID` and `SPOTIFY_CLIENT_SECRET` in `.env` (create an app at developer.spotify.com/dashboard). `w/play` still works without them, it just searches yt-dlp directly instead of Spotify.',
+    q: 'w/play says Spotify is not configured',
+    a: 'Put `SPOTIFY_CLIENT_ID` and `SPOTIFY_CLIENT_SECRET` in `.env` (create an app at developer.spotify.com/dashboard). Without them `w/play <title>` still works, it just skips Spotify and passes the text straight to yt-dlp, which returns the most viewed match. Spotify links and cover art need the credentials.',
   },
   {
     q: 'Where does the audio come from? Is it the full song?',

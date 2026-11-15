@@ -1,8 +1,8 @@
 import { PREFIX, COMMANDS, commandsText, compactList, aiContext, helpTopicsText, helpTopicAt } from './features.js';
-import { isSpotifyUrl, spotifyIdFromUrl, getTrack, spotifyConfigured, searchTracks } from './spotify.js';
+import { isSpotifyUrl, spotifyRefFromUrl, getTrack, getCollectionTracks, spotifyConfigured } from './spotify.js';
 import { trackFromQuery } from './track.js';
 import { askAI, aiConfigured } from './ai.js';
-import { COMPONENT_INTERACTIONS, helpMenu, searchMenu } from './ui.js';
+import { COMPONENT_INTERACTIONS, helpMenu } from './ui.js';
 
 /**
  * The lists are select menus. Every pick also has a plain command form
@@ -32,7 +32,6 @@ export function attachCommands({ client, player, cfg, log = console.log }) {
     for (const a of c.aliases) aliases.set(a.slice(PREFIX.length).toLowerCase(), c.name);
   }
 
-  const lastSearch = new Map();
   /** channelId -> Map<messageId, sentAt> for the w/help topic lists. */
   const helpMessages = new Map();
 
@@ -92,83 +91,99 @@ export function attachCommands({ client, player, cfg, log = console.log }) {
     return !!ts && Date.now() - ts <= HELP_TTL;
   }
 
-  async function findTrack(arg) {
+  /**
+   * Turn the command argument into the list of tracks to play.
+   *
+   *  - a Spotify track link      -> that one track
+   *  - a Spotify album/playlist  -> every track it holds, played in order
+   *  - plain text                -> the most popular match, so a shared title
+   *    plays the version people actually listen to
+   */
+  async function resolveRequest(arg) {
     if (isSpotifyUrl(arg)) {
       if (!spotifyConfigured()) throw new Error('a Spotify link needs SPOTIFY_CLIENT_ID & SPOTIFY_CLIENT_SECRET in .env');
-      const id = spotifyIdFromUrl(arg);
-      if (!id) throw new Error('unrecognized Spotify link (it must be a track link)');
-      return await getTrack(id);
+      const ref = spotifyRefFromUrl(arg);
+      if (!ref) throw new Error('unrecognized Spotify link, use a track, album or playlist link');
+      if (ref.type === 'track') return { tracks: [await getTrack(ref.id)] };
+
+      const cap = Number(cfg.commands?.playlistLimit) || 30;
+      const collection = await getCollectionTracks(arg, { cap });
+      if (!collection.tracks.length) throw new Error(`that ${collection.kind} has no playable tracks`);
+      return {
+        tracks: collection.tracks,
+        collection: `${collection.kind} "${collection.name}" (${collection.tracks.length} tracks)`,
+      };
     }
-    return await trackFromQuery(arg);
+
+    const track = await trackFromQuery(arg);
+    return { tracks: [track], synthetic: Boolean(track.synthetic) };
   }
 
-  async function startPlayback(msg, track, status) {
+  async function startPlayback(msg, tracks, status) {
+    const list = Array.isArray(tracks) ? tracks : [tracks];
     const target = voiceTarget(msg);
     const channel = target || (cfg.channelId ? await client.channels.fetch(cfg.channelId).catch(() => null) : null);
     if (!channel) throw new Error('you are not in a voice channel, and no default channelId is usable either');
     const guildId = channel.guildId || msg.guildId || cfg.guildId;
 
-    const line = `▶️ **${track.title}**${track.artist ? ` - ${track.artist}` : ''}`;
-    status.edit(`${line}\npreparing...`);
-    const res = await player.play({
-      track,
-      channelId: channel.id,
-      guildId,
-      onStatus: (m) => status.edit(`${line}\n${m}`),
-    });
-    if (res.aborted) {
-      await status.edit(`${line}\ncancelled`);
-      return;
+    // one token for the whole run: w/stop bumps it and this loop gives up
+    const session = player.newSession();
+    let played = 0;
+
+    for (let i = 0; i < list.length; i++) {
+      if (!player.isCurrent(session)) {
+        await status.edit(`stopped after ${played} of ${list.length} tracks`);
+        return;
+      }
+      const track = list[i];
+      const queueNote = list.length > 1 ? ` (${i + 1}/${list.length})` : '';
+      const line = `${track.title}${track.artist ? ` - ${track.artist}` : ''}${queueNote}`;
+      status.edit(`${line}\npreparing...`);
+
+      const res = await player.play({
+        track,
+        channelId: channel.id,
+        guildId,
+        onStatus: (m) => status.edit(`${line}\n${m}`),
+      });
+
+      if (res.aborted) {
+        await status.edit(`${line}\ncancelled`);
+        return;
+      }
+      played++;
+
+      if (!player.isCurrent(session)) {
+        await status.edit(`stopped after ${played} of ${list.length} tracks`);
+        return;
+      }
+      if (list.length > 1) {
+        status.edit(`${line}\ndone, ${list.length - played} left`);
+        // the voice connection is reused, so the handover to the next track is immediate
+        await new Promise((r) => setTimeout(r, 1200));
+      } else if (res.ok) {
+        status.edit(
+          `${line}\ndone - ${res.lyrics} lyric lines, audio: ${res.source}${player.state.offsetMs ? `, offset ${player.state.offsetMs}ms` : ''}`,
+        );
+      }
     }
-    if (res.ok) {
-      await status.edit(
-        `${line}\n✅ done • ${res.lyrics} lyric lines • audio: ${res.source}${player.state.offsetMs ? ` • offset ${player.state.offsetMs}ms` : ''}`,
-      );
-    }
+
+    if (list.length > 1) await status.edit(`played ${played} of ${list.length} tracks`);
   }
 
   async function cmdPlay(msg, arg) {
-    if (!arg) return say(msg, `Format: \`${prefix}play <song title | spotify link | search result number>\``);
-    const status = await statusMessage(msg, '🔎 searching for the song...');
-    const n = Number(arg);
-    const stored = lastSearch.get(msg.channelId);
+    if (!arg) {
+      return say(msg, `Format: \`${prefix}play <song title | Spotify track, album or playlist link>\``);
+    }
+    const status = await statusMessage(msg, 'looking for the song...');
     try {
-      let track;
-      if (Number.isInteger(n) && n > 0 && stored && stored[n - 1]) {
-        track = stored[n - 1];
-        status.edit(`picked: **${track.title}** - ${track.artist}`);
-      } else {
-        track = await findTrack(arg);
-        if (track.synthetic) status.edit('Spotify is not configured, using a direct search (yt-dlp)');
-      }
-      await startPlayback(msg, track, status);
+      const req = await resolveRequest(arg);
+      if (req.synthetic) status.edit('Spotify is not configured, searching yt-dlp directly');
+      if (req.collection) status.edit(`${req.collection}\nqueued, starting the first track...`);
+      await startPlayback(msg, req.tracks, status);
     } catch (e) {
       await status.fail(e.message);
     }
-  }
-
-  async function cmdSearch(msg, arg) {
-    if (!spotifyConfigured()) return say(msg, '❌ Search needs SPOTIFY_CLIENT_ID & SPOTIFY_CLIENT_SECRET in .env');
-    if (!arg) return say(msg, `Format: \`${prefix}search <keywords>\``);
-    const status = await statusMessage(msg, '🔎 searching Spotify...');
-    let results;
-    try {
-      results = await searchTracks(arg, 6);
-    } catch (e) {
-      return status.fail(e.message);
-    }
-    if (!results.length) return status.fail(`no results for "${arg}"`);
-
-    lastSearch.set(msg.channelId, results);
-    const text = [
-      `**Results for "${arg}"**`,
-      '',
-      ...results.map((t, i) => `\`${i + 1}\`. **${t.title}** - ${t.artist} \`${fmtDur(t.duration)}\``),
-      '',
-      `Pick one from the menu below, or type \`${prefix}play <number>\`.`,
-    ].join('\n');
-    await status.edit(`found ${results.length} results, menu below`);
-    await sayWithMenu(msg, text, [searchMenu(results, msg.channelId)]);
   }
 
   async function cmdStop(msg) {
@@ -267,26 +282,6 @@ export function attachCommands({ client, player, cfg, log = console.log }) {
       return answer({ content: `**${topic.index + 1}. ${topic.q}**\n\n${topic.a}`, components: [] });
     }
 
-    if (kind === 'search') {
-      const results = lastSearch.get(channelId) || lastSearch.get(channel.id) || [];
-      const picked = results[Number(value)];
-      if (!picked) return answer({ content: 'that list expired, run the search again', components: [] });
-
-      answer({ content: `**${picked.title}** - ${picked.artist}\npicked from the list, preparing...`, components: [] });
-      const ctx = {
-        channel,
-        channelId: channel.id,
-        guild: channel.guild || interaction.guild || null,
-        guildId: channel.guildId || interaction.guildId || cfg.guildId,
-        member: interaction.member || null,
-      };
-      const st = await statusMessage(ctx, 'preparing...');
-      try {
-        await startPlayback(ctx, picked, st);
-      } catch (e) {
-        await st.fail(e.message);
-      }
-    }
     return undefined;
   }
 
@@ -310,8 +305,6 @@ export function attachCommands({ client, player, cfg, log = console.log }) {
     switch (name) {
       case 'w/play':
         return cmdPlay(msg, arg);
-      case 'w/search':
-        return cmdSearch(msg, arg);
       case 'w/stop':
         return cmdStop(msg);
       case 'w/sync':
@@ -334,13 +327,13 @@ export function attachCommands({ client, player, cfg, log = console.log }) {
   });
 
   if (!COMPONENT_INTERACTIONS) {
-    log('this build has no INTERACTION_CREATE handler, so a menu click cannot reach the process; use w/play <n> or w/help <n>');
+    log('this build has no INTERACTION_CREATE handler, so a menu click cannot reach the process; use w/help <n>');
   }
 
   return {
     prefix,
     handleMessage,
     /** used by CLI mode: run a single command without Discord */
-    _internals: { findTrack, voiceTarget, isHelpReply, handleComponent, lastSearch }, 
+    _internals: { resolveRequest, startPlayback, voiceTarget, isHelpReply, handleComponent }, 
   };
 }
