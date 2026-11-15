@@ -1,11 +1,12 @@
-import { PREFIX, COMMANDS, commandsText, compactList, aiContext } from './features.js';
+import { PREFIX, COMMANDS, commandsText, compactList, aiContext, helpTopicsText, helpTopicAt } from './features.js';
 import { isSpotifyUrl, spotifyIdFromUrl, getTrack, spotifyConfigured, searchTracks } from './spotify.js';
 import { trackFromQuery } from './track.js';
 import { askAI, aiConfigured } from './ai.js';
 
 const NUM_EMOJI = ['1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️⃣'];
 const CANCEL_EMOJI = '❌';
-const AI_HELP_TTL = 10 * 60 * 1000;
+/** How long a w/help topic list stays open for replies. */
+const HELP_TTL = 30 * 60 * 1000;
 
 const fmtDur = (sec) => {
   const s = Math.max(0, Math.round(sec || 0));
@@ -27,7 +28,8 @@ export function attachCommands({ client, player, cfg, log = console.log }) {
   }
 
   const lastSearch = new Map();
-  let helpCache = { at: 0, text: null };
+  /** channelId -> Map<messageId, sentAt> for the w/help topic lists. */
+  const helpMessages = new Map();
 
   const say = (msg, text) => msg.channel.send(clip(text)).catch((e) => log('failed to send message:', e?.message || e));
 
@@ -50,6 +52,29 @@ export function attachCommands({ client, player, cfg, log = console.log }) {
   function voiceTarget(msg) {
     const ch = msg.member?.voice?.channel || msg.guild?.members?.me?.voice?.channel || null;
     return ch;
+  }
+
+  function rememberHelpMessage(channelId, messageId) {
+    if (!channelId || !messageId) return;
+    const key = String(channelId);
+    let m = helpMessages.get(key);
+    if (!m) {
+      m = new Map();
+      helpMessages.set(key, m);
+    }
+    m.set(String(messageId), Date.now());
+    for (const [id, ts] of m) if (Date.now() - ts > HELP_TTL) m.delete(id);
+    if (!m.size) helpMessages.delete(key);
+  }
+
+  /** True when this message is a reply to a w/help list still inside its window. */
+  function isHelpReply(msg) {
+    const ref = msg.reference?.messageId;
+    if (!ref) return false;
+    const m = helpMessages.get(String(msg.channelId));
+    if (!m) return false;
+    const ts = m.get(String(ref));
+    return !!ts && Date.now() - ts <= HELP_TTL;
   }
 
   async function findTrack(arg) {
@@ -186,54 +211,57 @@ export function attachCommands({ client, player, cfg, log = console.log }) {
       .catch((e) => st.fail(e.message));
   }
 
-  async function cmdHelp(msg, arg) {
-    const base = commandsText();
-    if (arg) {
-      if (!aiConfigured()) {
-        return say(msg, `❌ AI is not configured (set AI_API_URL, AI_API_KEY, AI_MODEL in .env)\n\n${base}`);
-      }
-      if (!msg.channel.sendTyping) {
-        /* noop */
-      } else {
-        try {
-          await msg.channel.sendTyping();
-        } catch {}
-      }
-      const st = await statusMessage(msg, '🧠 thinking...');
+  /**
+   * The only path that reaches the AI. The system prompt keeps it inside this
+   * bot's features, so an unrelated question gets a one line refusal.
+   */
+  async function askAbout(msg, question, { fromReply = false } = {}) {
+    if (!aiConfigured()) {
+      return say(
+        msg,
+        `❌ The AI is not configured (set AI_API_URL, AI_API_KEY, AI_MODEL in .env), so only the topics work:\n\n${helpTopicsText(prefix)}`,
+      );
+    }
+    if (msg.channel.sendTyping) {
       try {
-        const answer = await askAI({ system: aiContext(), user: arg, maxTokens: 450 });
-        return st.edit(answer);
-      } catch (e) {
-        return st.fail(`AI request failed: ${e.message}`);
-      }
+        await msg.channel.sendTyping();
+      } catch {}
     }
+    const st = await statusMessage(msg, '🧠 working out the steps...');
+    const user = fromReply
+      ? `The user replied to the help topic list with this goal, in their own words: ${question}`
+      : question;
+    try {
+      const answer = await askAI({ system: aiContext(), user, maxTokens: 450 });
+      return st.edit(answer);
+    } catch (e) {
+      return st.fail(`AI request failed: ${e.message}`);
+    }
+  }
 
-    let intro = '';
-    if (aiConfigured()) {
-      if (Date.now() - helpCache.at > AI_HELP_TTL) {
-        try {
-          const t = await askAI({
-            system: aiContext(),
-            user: 'Write one opening paragraph (max 3 sentences) for a Discord help message: what this project is for and when to use it. No command list.',
-            maxTokens: 200,
-          });
-          helpCache = { at: Date.now(), text: t };
-        } catch {}
-      }
-      intro = helpCache.text ? `💡 ${helpCache.text}\n\n` : '';
+  async function cmdHelp(msg, arg) {
+    if (arg) {
+      const topic = /^\d+$/.test(arg) ? helpTopicAt(arg) : null;
+      if (topic) return say(msg, `**${topic.index + 1}. ${topic.q}**\n\n${topic.a}`);
+      return askAbout(msg, arg);
     }
-    return say(
-      msg,
-      `${intro}**Available commands**\n\n${base}\n\nAsk anything: \`${prefix}help <question>\`${aiConfigured() ? ' (answered by AI)' : ' (needs AI_API_URL)'}`,
-    );
+    const sent = await say(msg, helpTopicsText(prefix));
+    if (sent?.id) rememberHelpMessage(msg.channelId, sent.id);
+    return sent;
   }
 
   async function handleMessage(msg) {
     const content = (msg.content || '').trim();
-    if (!content.toLowerCase().startsWith(prefix)) return;
     const isSelf = msg.author?.id && msg.author.id === client.user?.id;
     if (!isSelf && !allowOtherUsers) return;
     if (onlyChannels.size && !onlyChannels.has(String(msg.channelId))) return;
+
+    if (!content.toLowerCase().startsWith(prefix)) {
+      // second way in: a reply to the topic list, no prefix needed, the user just
+      // says what they want to do and the AI maps it onto a feature
+      if (content && isHelpReply(msg)) return askAbout(msg, content, { fromReply: true });
+      return;
+    }
 
     const [rawCmd, ...rest] = content.slice(prefix.length).trim().split(/\s+/);
     const name = aliases.get((rawCmd || '').toLowerCase()) || (rawCmd || '').toLowerCase();
@@ -265,6 +293,6 @@ export function attachCommands({ client, player, cfg, log = console.log }) {
     prefix,
     handleMessage,
     /** used by CLI mode: run a single command without Discord */
-    _internals: { findTrack, voiceTarget },
+    _internals: { findTrack, voiceTarget, isHelpReply },
   };
 }

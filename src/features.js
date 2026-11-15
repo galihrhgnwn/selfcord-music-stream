@@ -32,8 +32,8 @@ export const COMMANDS = [
   },
   {
     name: 'w/help',
-    args: '[question]',
-    desc: 'Help. Without an argument: a summary of every command. With a question: answered by AI from this project\'s real features.',
+    args: '[topic number | question]',
+    desc: 'Help. Without an argument: the list of help topics. With a number: that answer, no AI needed. With anything else, or as a reply to the topic list: the AI works out how to do it with this bot.',
     aliases: ['w/h'],
   },
   {
@@ -55,6 +55,78 @@ export const FEATURES = [
   'Commands are typed as messages starting with w/ (from a phone or any client); the selfbot reads its own messages.',
 ];
 
+/**
+ * Help topics. The list itself is the w/help message, and every answer here is
+ * static: it needs no AI, no network and no token, so w/help always works.
+ * Only a question that is not on this list reaches the AI.
+ */
+export const HELP_TOPICS = [
+  {
+    q: 'How do I start a stream?',
+    a: 'Join a voice channel, then type `w/play <song title>`. The account joins the channel you are in, downloads the audio, renders the lyric video and opens Go Live. The first render of a song takes a few minutes (a 194s song took ~218s on the test machine); later plays of the same song reuse the cache.',
+  },
+  {
+    q: 'How do I look for a song before playing it?',
+    a: 'Type `w/search <keywords>`. You get 6 Spotify results with a duration. React with 1-6 to play one, or type `w/play <number>` to use the list again. React with `❌` to cancel.',
+  },
+  {
+    q: 'The lyrics are behind or ahead of the music',
+    a: 'Type `w/sync -500` when the lyrics are late and `w/sync +500` when they are early, in milliseconds. The slides do not depend on timing, so this only re-muxes the video (much faster than a first build) and restarts the stream from the beginning.',
+  },
+  {
+    q: 'How do I stop the stream?',
+    a: 'Type `w/stop` (aliases `w/leave`, `w/off`). The stream stops and the account leaves the voice channel. Set `stayInVoice: true` in `config.json` if you would rather keep it hanging around in the channel.',
+  },
+  {
+    q: 'w/search says Spotify is not configured',
+    a: 'Put `SPOTIFY_CLIENT_ID` and `SPOTIFY_CLIENT_SECRET` in `.env` (create an app at developer.spotify.com/dashboard). `w/play` still works without them, it just searches yt-dlp directly instead of Spotify.',
+  },
+  {
+    q: 'Where does the audio come from? Is it the full song?',
+    a: 'Full song: yt-dlp. The Spotify Web API does not allow streaming full tracks (DRM), so Spotify is only used for search, metadata and cover art. Set `audioSource: "preview"` in `config.json` if you want the official 30 second Spotify clip instead.',
+  },
+  {
+    q: 'No synced lyrics found for my song',
+    a: 'lrclib.net has no synced version of that track. Write a `.lrc` file with `[mm:ss.xx]text` lines, point `lyricsFile` at it in `config.json`, and the automatic lookup is skipped. Files without timestamps are rejected.',
+  },
+  {
+    q: 'The stream stutters, looks green or freezes',
+    a: 'Lower `video.bitrateVideo` to 2000 and `video.fps` to 24 in `config.json`, and keep `video.streamPreview` false. The render is also stricter than a normal mp4: the video must be H.264 with `has_b_frames=0` and a keyframe every second, because the stream copies the bitstream instead of re-encoding it.',
+  },
+  {
+    q: 'Can I change the song while it is playing?',
+    a: 'Run `w/play <other song>` again: the current stream is stopped first, then the new one starts. Use `w/stop` if you only want it to go quiet.',
+  },
+  {
+    q: 'Who is allowed to run the commands, and where?',
+    a: 'Only the account itself by default. Set `commands.allowOtherUsers: true` to let others run them, list channel ids in `commands.channels` to restrict where the bot answers, and change `commands.prefix` (default `w/`) if you want another prefix.',
+  },
+  {
+    q: 'Does it capture my screen? How heavy is it on the CPU?',
+    a: 'No capture. The lyric frames are rendered ahead of time into a single mp4, and that file is sent as a Go Live stream. While streaming, the video is copied rather than re-encoded, so the CPU only pays for RTP packetization and Opus, and the audio plus the lyric frames share one timeline so they cannot drift apart.',
+  },
+  {
+    q: 'Is this safe for my Discord account?',
+    a: 'No. A selfbot violates the Discord ToS and the account can be banned, so use a spare account. The token belongs in `.env` (or `config.json`); both are gitignored and neither is ever printed by the bot.',
+  },
+];
+
+export function helpTopicsText(prefix = PREFIX) {
+  return [
+    '**Help topics**',
+    '',
+    ...HELP_TOPICS.map((t, i) => `\`${i + 1}\`. ${t.q}`),
+    '',
+    `Type \`${prefix}help <number>\` for one of these answers.`,
+    'If your question is not on the list, reply to this message with what you want to do and the AI works out the steps for you.',
+  ].join('\n');
+}
+
+export function helpTopicAt(n) {
+  const i = Number(n) - 1;
+  return Number.isInteger(i) && i >= 0 && i < HELP_TOPICS.length ? { index: i, ...HELP_TOPICS[i] } : null;
+}
+
 export function commandsText() {
   const lines = COMMANDS.map((c) => {
     const alias = c.aliases.length ? ` (alias: ${c.aliases.join(', ')})` : '';
@@ -72,14 +144,20 @@ export function compactList() {
 export function aiContext() {
   return [
     'You are the assistant for a Discord selfbot project named discord-lyrics-stream.',
-    'Answer briefly, at most 3 short paragraphs, in English, in a direct tone.',
-    'Never invent commands that are not in the list. If asked about something outside these features, say it is not available.',
+    'Scope: answer ONLY questions about this bot, its commands, its settings and how to use it.',
+    'If the question is not about this bot, reply with one short line saying you only cover this bot and stop there. Do not help with anything else, not even partially.',
+    'Never invent a command, a setting or a behaviour that is not listed below. If the user asks for something the bot cannot do, say so in one line and name the closest thing it can do.',
+    'Answer in English, at most 3 short paragraphs, in a direct tone. Name the exact command and the exact config key when those are the answer.',
+    'The user may describe a goal in their own words instead of naming a command. Work out which listed feature covers it and give the steps in order, starting from what they should type.',
     '',
     'Commands that exist:',
     ...COMMANDS.map((c) => `- ${c.name}${c.args ? ' ' + c.args : ''}${c.aliases.length ? ' (alias ' + c.aliases.join(', ') + ')' : ''}: ${c.desc}`),
     '',
     'Features and technical limits:',
     ...FEATURES.map((f) => `- ${f}`),
+    '',
+    'Questions already answered without AI (the help topics):',
+    ...HELP_TOPICS.map((t, i) => `- ${i + 1}. ${t.q}`),
     '',
     'Settings live in config.json: token, guildId, channelId, song, lyricsFile, audio, cover, video (width/height/fps/includeAudio/streamPreview), accent, loop, audioSource, lyricOffsetMs, stayInVoice, commands (prefix/channels/allowOtherUsers), cache, render.',
     'Credentials come from .env: DISCORD_TOKEN, SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET, AI_API_URL, AI_API_KEY, AI_MODEL.',

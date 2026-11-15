@@ -12,10 +12,18 @@ Every command is typed in any channel this account can read. If you are already 
 - `w/search <keywords>` (alias `w/s`) - show 6 Spotify results as an interactive list. React with 1-6 to play, or `❌` to cancel. You can also follow up with `w/play 3`.
 - `w/stop` (alias `w/leave`, `w/off`) - stop Go Live and leave the voice channel.
 - `w/sync <milliseconds>` - shift the lyric timing. `w/sync +500` when the lyrics are late, `w/sync -500` when they are early. Slides are cached, so this is only a re-mux (far faster than the first build) and the stream restarts from the beginning.
-- `w/help [question]` - without an argument: a summary of every command. With a question: answered by AI from this project's real features.
+- `w/help [topic number | question]` - without an argument: the list of help topics. With a number: that answer, no AI involved. With a question, or as a reply to the topic list in your own words: the AI works out the steps, and it only answers questions about this bot.
 - `w/listcmd` (alias `w/cmd`) - list the commands.
 
 The command list lives in one place: `src/features.js`. So `w/listcmd`, `w/help`, and the AI context always stay in sync.
+
+## How `w/help` works
+
+`w/help` posts a numbered list of topics (starting a stream, out of sync lyrics, Spotify not configured, and so on). Each answer is static text kept in `src/features.js`, so the list works with no AI, no network and no credentials.
+
+When the topic list does not cover the problem, the user replies to that message and describes the goal in their own words, prefix or not. The AI maps the goal onto the real features and returns the steps. The system prompt pins it to this bot: an unrelated question gets a one line refusal instead of an answer. The reply window is 30 minutes.
+
+Without `AI_API_URL` only the numbered topics work; `w/help <question>` then answers with the topic list plus a note about the missing setting.
 
 ## Why it stays light and drift-free
 
