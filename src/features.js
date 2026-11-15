@@ -46,6 +46,7 @@ export const FEATURES = [
   'Lyrics follow the song being played: the track that w/play resolves is the one searched on lrclib (title, artist and duration), so the stream always shows that song. There is no fixed song or lyrics file in config.json. A hand-written .lrc in cache/lyrics named after the track overrides the lookup for that song alone.',
   'The voice channel is the caller\'s: the bot joins whichever channel the user who typed w/play is sitting in, so another user can get the stream in their own channel. config.channelId is only the fallback.',
   'Spotify links: a track link plays that exact track, an album or playlist link queues every track and plays them in order (capped by commands.playlistLimit, 30 by default).',
+  'The yt-dlp binary is found for you: the configured path first, then the usual names on PATH, then the Python module. A configured name that cannot run is reported in the log and skipped instead of failing the command with ENOENT.',
   'Audio match: yt-dlp lists the ten best YouTube matches and the most viewed one wins, after matches that are far from the Spotify duration are removed. Full audio always comes from yt-dlp, because the Spotify API cannot stream full tracks.',
   'Full audio is fetched with yt-dlp because the Spotify API does not allow streaming full tracks (DRM). An official 30 second preview is available through audioSource: "preview".',
   'Synced lyrics come from lrclib.net, or from a manual .lrc file when the song is not on lrclib.',
@@ -87,6 +88,10 @@ export const HELP_TOPICS = [
   {
     q: 'No synced lyrics found for my song',
     a: 'lrclib.net has no synced version of that track. Drop a `.lrc` file with `[mm:ss.xx]text` lines into `cache/lyrics/` (or whatever `cache.lyrics` points at) and name it after the song: `<track id>.lrc`, or `artist-title.lrc` in lowercase with dashes. It is picked up for that song only, and the automatic lookup is skipped. Files without timestamps are rejected.',
+  },
+  {
+    q: 'w/play says yt-dlp was not found',
+    a: 'The downloader is picked automatically: `ytdlpPath` in `config.json`, then `YTDLP_PATH` in `.env`, then `yt-dlp` on PATH, then `yt-dlp.exe`, then the Python module (`python3 -m yt_dlp`). A name that does not run is skipped with one log line, so a typo like `ytdlp` no longer breaks playback. If every candidate fails, install it (`pip install -U yt-dlp`) or point `ytdlpPath` at the full path, for example `/usr/local/bin/yt-dlp`.',
   },
   {
     q: 'Which voice channel does the bot join?',

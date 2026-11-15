@@ -42,6 +42,66 @@ function run(cmd, args, { timeoutMs = 300000, onLine } = {}) {
   });
 }
 
+/**
+ * Where yt-dlp lives. A bare name is looked up on PATH, and the name people
+ * actually type varies ("ytdlp", "yt-dlp.exe", a Python install), so the
+ * configured value is tried first and the usual names after it. Nothing in
+ * .env or config.json is rewritten: a wrong value is reported and worked
+ * around, never silently overridden on disk.
+ */
+const YTDLP_CANDIDATES = (configured) => {
+  const list = [
+    configured ? { cmd: configured, args: [], configured: true } : null,
+    { cmd: 'yt-dlp', args: [] },
+    { cmd: 'yt-dlp.exe', args: [] },
+    { cmd: 'ytdlp', args: [] },
+    { cmd: 'youtube-dl', args: [] },
+    { cmd: process.env.PYTHON || 'python3', args: ['-m', 'yt_dlp'] },
+    { cmd: 'python', args: ['-m', 'yt_dlp'] },
+  ].filter(Boolean);
+
+  const seen = new Set();
+  return list.filter((t) => {
+    const key = `${t.cmd} ${t.args.join(' ')}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+};
+
+let ytdlpTool = null;
+
+/** The first candidate that answers --version, remembered for this process. */
+export async function resolveYtdlp(cfg = {}) {
+  if (ytdlpTool) return ytdlpTool;
+
+  const configured = cfg.ytdlpPath || process.env.YTDLP_PATH || null;
+  const tried = [];
+  for (const tool of YTDLP_CANDIDATES(configured)) {
+    try {
+      const { out } = await run(tool.cmd, [...tool.args, '--version'], { timeoutMs: 20000 });
+      ytdlpTool = tool;
+      if (configured && tool.cmd !== configured) {
+        onError(cfg, `yt-dlp: "${configured}" did not run, using "${[tool.cmd, ...tool.args].join(' ')}" (${out.trim().split('\n')[0]})`);
+      }
+      return tool;
+    } catch (e) {
+      tried.push(`${tool.cmd}${tool.args.length ? ' ' + tool.args.join(' ') : ''} -> ${e.code || e.message.split('\n')[0]}`);
+    }
+  }
+
+  throw new Error(
+    `yt-dlp was not found. Tried: ${tried.join('; ')}. Install it (pip install -U yt-dlp) or point ytdlpPath in config.json / YTDLP_PATH in .env at the full path of the binary.`,
+  );
+}
+
+/** For tests and diagnostics: forget the cached tool. */
+export function resetYtdlpCache() {
+  ytdlpTool = null;
+}
+
+const asTool = (bin) => (typeof bin === 'string' ? { cmd: bin, args: [] } : bin);
+
 function findCached(dir, id) {
   if (!fs.existsSync(dir)) return null;
   const hit = fs.readdirSync(dir).find((f) => f.startsWith(`${id}.`) && !f.endsWith('.part'));
@@ -58,10 +118,10 @@ async function downloadPreview(track, dir) {
 }
 
 async function downloadWithYtdlp(track, dir, cfg) {
-  const bin = cfg.ytdlpPath || process.env.YTDLP_PATH || 'yt-dlp';
+  const tool = await resolveYtdlp(cfg);
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'dl-'));
   const label = [track.artist, track.title].filter(Boolean).join(' ');
-  const picked = await pickBestMatch(track, cfg, bin);
+  const picked = await pickBestMatch(track, cfg, tool);
   const target = picked ? `https://www.youtube.com/watch?v=${picked.id}` : `ytsearch1:${label} audio`;
   const args = [
     '--no-warnings',
@@ -79,7 +139,7 @@ async function downloadWithYtdlp(track, dir, cfg) {
     path.join(tmp, 'audio.%(ext)s'),
     target,
   ];
-  await run(bin, args, { timeoutMs: cfg.downloadTimeoutMs || 240000 });
+  await run(tool.cmd, [...tool.args, ...args], { timeoutMs: cfg.downloadTimeoutMs || 240000 });
 
   const produced = fs.readdirSync(tmp).filter((f) => f.startsWith('audio.'));
   if (!produced.length) throw new Error('yt-dlp produced no audio file');
@@ -99,14 +159,16 @@ async function downloadWithYtdlp(track, dir, cfg) {
  * that are far off it are dropped first, so a 10 hour loop or a 40s teaser does
  * not win just because it has views.
  */
-export async function pickBestMatch(track, cfg, bin = cfg.ytdlpPath || process.env.YTDLP_PATH || 'yt-dlp') {
+export async function pickBestMatch(track, cfg, bin) {
+  const tool = bin ? asTool(bin) : await resolveYtdlp(cfg);
   const label = [track.artist, track.title].filter(Boolean).join(' ');
   const fields = '%(id)s\t%(view_count)s\t%(duration)s\t%(title)s';
   let out = '';
   try {
     ({ out } = await run(
-      bin,
+      tool.cmd,
       [
+        ...tool.args,
         '--no-warnings',
         '--no-playlist',
         '--flat-playlist',
@@ -121,7 +183,13 @@ export async function pickBestMatch(track, cfg, bin = cfg.ytdlpPath || process.e
       { timeoutMs: cfg.searchTimeoutMs || 90000 },
     ));
   } catch (e) {
-    onError(cfg, `yt-dlp search failed (${e.message}), using its top result`);
+    // a missing binary is not a search miss: report it instead of falling back
+    if (e.code === 'ENOENT') {
+      throw new Error(
+        `yt-dlp could not be started: "${tool.cmd}" is not on PATH. Install it, or point ytdlpPath in config.json / YTDLP_PATH in .env at the binary.`,
+      );
+    }
+    onError(cfg, `${path.basename(tool.cmd)} search failed (${e.message}), using its top result`);
     return null;
   }
 

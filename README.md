@@ -123,6 +123,7 @@ There is no song, lyrics file or audio path in the config. Every `w/play` (and e
 - `commands.playlistLimit` - how many tracks an album/playlist link may queue, default 30.
 - `cache.lyrics` - folder for per-song `.lrc` overrides, default `cache/lyrics`.
 - Every path in `config.json` (`render.out`, `cache.*`) is resolved relative to the **folder holding that config**, not the project root. So a config inside `test/` has to write `../cache/...`.
+- `ytdlpPath` - optional. The downloader is discovered automatically: this value, then `YTDLP_PATH` in `.env`, then `yt-dlp` on `PATH`, then `yt-dlp.exe`, then `python3 -m yt_dlp`. A value that cannot run is logged once and skipped, so `"ytdlp"` (a name that does not exist) falls back to the real binary instead of failing with `spawn ytdlp ENOENT`. When nothing works, the error lists what was tried and how to fix it.
 - `audioSource` - `"ytdlp"` (default, full song) or `"preview"` (the official 30 second Spotify clip).
 - `lyricOffsetMs` - initial lyric offset in milliseconds (can also be set live with `w/sync`).
 - `stayInVoice` - `true` if the account should stay in voice after the song ends.
