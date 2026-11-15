@@ -211,7 +211,10 @@ export class Player {
     this.state.startedAt = Date.now();
     this.state.playing = true;
 
-    if (audio.match) this.log(`audio match: ${audio.match.id} (${audio.match.views} views)`);
+    if (audio.match) {
+      const views = audio.match.views ? ` (${audio.match.views} views)` : '';
+      this.log(`audio match: ${audio.match.id}${views} via ${audio.source}`);
+    }
     this.log(`Go Live: ${track.title} (${video.cached ? 'cache' : 'fresh build'}), lyric offset ${this.state.offsetMs}ms`);
     try {
       await playStream(output, this.streamer, {

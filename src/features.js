@@ -90,6 +90,10 @@ export const HELP_TOPICS = [
     a: 'lrclib.net has no synced version of that track. Drop a `.lrc` file with `[mm:ss.xx]text` lines into `cache/lyrics/` (or whatever `cache.lyrics` points at) and name it after the song: `<track id>.lrc`, or `artist-title.lrc` in lowercase with dashes. It is picked up for that song only, and the automatic lookup is skipped. Files without timestamps are rejected.',
   },
   {
+    q: 'YouTube says "Sign in to confirm you\'re not a bot"',
+    a: 'That is YouTube blocking the network the bot runs on, not a bug in the bot: a datacenter IP is asked to prove it is human, and no player client setting gets around it. `w/play` then falls back to SoundCloud automatically, so the song still plays. To use YouTube again, put a `cookies.txt` (exported from a browser logged into YouTube) next to the project, or point `ytdlpCookies` / `YTDLP_COOKIES` at it. `audioSources` decides the order, default `["youtube", "soundcloud"]`.',
+  },
+  {
     q: 'w/play says yt-dlp was not found',
     a: 'The downloader is looked for first: `ytdlpPath` in `config.json`, `YTDLP_PATH` in `.env`, a build in `bin/`, `yt-dlp` on PATH, then the Python module. If none of them run and `ytdlpAutoInstall` is on, it installs itself once (`pip --target vendor`, or the standalone build downloaded into `bin/`), and later starts reuse that file. A build uploaded by hand into `bin/yt-dlp` works too, even without the executable bit. If everything fails the error names the missing path, and pointing `ytdlpPath` at the binary fixes it.',
   },

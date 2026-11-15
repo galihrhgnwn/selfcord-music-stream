@@ -247,12 +247,24 @@ async function downloadPreview(track, dir) {
   return file;
 }
 
-async function downloadWithYtdlp(track, dir, cfg) {
-  const tool = await resolveYtdlp(cfg);
+const COOKIE_FILES = ['cookies.txt', 'youtube-cookies.txt'];
+
+/** A cookies file restores YouTube when the network is asked to prove it is human. */
+function cookiesFile(cfg) {
+  const explicit = cfg.ytdlpCookies || process.env.YTDLP_COOKIES;
+  if (explicit) return fs.existsSync(explicit) ? explicit : null;
+  const root = cfg.__dir || process.cwd();
+  for (const name of COOKIE_FILES) {
+    const p = path.join(root, name);
+    if (fs.existsSync(p)) return p;
+  }
+  return null;
+}
+
+/** One download: `url` is a watch page or a search query. Returns the cached copy. */
+async function fetchAudio(tool, url, track, dir, cfg) {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'dl-'));
-  const label = [track.artist, track.title].filter(Boolean).join(' ');
-  const picked = await pickBestMatch(track, cfg, tool);
-  const target = picked ? `https://www.youtube.com/watch?v=${picked.id}` : `ytsearch1:${label} audio`;
+  const cookies = cookiesFile(cfg);
   const args = [
     '--no-warnings',
     '--no-playlist',
@@ -261,26 +273,170 @@ async function downloadWithYtdlp(track, dir, cfg) {
     '25',
     '--retries',
     '2',
+    ...(cookies ? ['--cookies', cookies] : []),
+    ...(cfg.ytdlpYoutubeClient ? ['--extractor-args', `youtube:player_client=${cfg.ytdlpYoutubeClient}`] : []),
     '-f',
     'bestaudio[ext=m4a]/bestaudio',
     '--max-filesize',
     String(cfg.maxAudioMb || 60) + 'M',
     '-o',
     path.join(tmp, 'audio.%(ext)s'),
-    target,
+    url,
   ];
-  await run(tool.cmd, [...tool.args, ...args], { timeoutMs: cfg.downloadTimeoutMs || 240000 });
-
-  const produced = fs.readdirSync(tmp).filter((f) => f.startsWith('audio.'));
-  if (!produced.length) throw new Error('yt-dlp produced no audio file');
-  const src = path.join(tmp, produced[0]);
-  const ext = path.extname(src) || '.webm';
-  const dest = path.join(dir, `${track.id}${ext}`);
-  fs.copyFileSync(src, dest);
   try {
-    fs.rmSync(tmp, { recursive: true, force: true });
-  } catch {}
-  return { file: dest, match: picked };
+    await run(tool.cmd, [...tool.args, ...args], { timeoutMs: cfg.downloadTimeoutMs || 240000, env: tool.env });
+    const produced = fs.readdirSync(tmp).filter((f) => f.startsWith('audio.'));
+    if (!produced.length) throw new Error('yt-dlp produced no audio file');
+    const src = path.join(tmp, produced[0]);
+    const ext = path.extname(src) || '.webm';
+    const dest = path.join(dir, `${track.id}${ext}`);
+    fs.copyFileSync(src, dest);
+    return dest;
+  } finally {
+    try {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    } catch {}
+  }
+}
+
+const firstLine = (e) =>
+  String(e?.message || e)
+    .split('\n')
+    .map((l) => l.trim())
+    .filter(Boolean)
+    .slice(-1)[0]
+    ?.slice(0, 300) || 'unknown error';
+
+/**
+ * Get the song as audio, walking the source list until one answers.
+ *
+ * YouTube is first because it has the real masters, but a datacenter IP is
+ * regularly told "Sign in to confirm you're not a bot" and no player client
+ * gets around it. SoundCloud serves the same song from the same block of IPs,
+ * so it is the fallback, and a cookies.txt (or YTDLP_COOKIES) puts YouTube back
+ * in front when the account owner supplies one.
+ */
+async function downloadWithYtdlp(track, dir, cfg) {
+  const tool = await resolveYtdlp(cfg);
+  const label = [track.artist, track.title].filter(Boolean).join(' ');
+  const sources = cfg.audioSources || ['youtube', 'soundcloud'];
+  const failures = [];
+
+  if (sources.includes('youtube')) {
+    const picked = await pickBestMatch(track, cfg, tool);
+    const url = picked ? `https://www.youtube.com/watch?v=${picked.id}` : `ytsearch1:${label} audio`;
+    try {
+      const file = await fetchAudio(tool, url, track, dir, cfg);
+      return { file, match: picked, source: 'yt-dlp' };
+    } catch (e) {
+      failures.push(`youtube: ${firstLine(e)}`);
+      onError(cfg, `youtube download failed (${firstLine(e)}), trying the next audio source`);
+    }
+  }
+
+  if (sources.includes('soundcloud')) {
+    let picked = null;
+    try {
+      picked = await pickSoundCloudMatch(track, cfg, tool);
+    } catch (e) {
+      failures.push(`soundcloud search: ${firstLine(e)}`);
+    }
+    const url = picked?.url || `scsearch1:${label}`;
+    try {
+      const file = await fetchAudio(tool, url, track, dir, cfg);
+      return { file, match: picked, source: 'soundcloud' };
+    } catch (e) {
+      failures.push(`soundcloud: ${firstLine(e)}`);
+    }
+  }
+
+  throw new Error(
+    `no audio source worked (${failures.join('; ')}). YouTube wants cookies from this network: drop a cookies.txt next to the project or set ytdlpCookies / YTDLP_COOKIES, or keep SoundCloud in audioSources.`,
+  );
+}
+
+const NOISE = /\b(remix|rework|edit|sped|slowed|nightcore|cover|karaoke|instrumental|8d|bass ?boost|extended|loop|teaser|reaction|tribute)\b/;
+
+const words = (s) =>
+  String(s || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9 ]+/g, ' ')
+    .split(/\s+/)
+    .filter((w) => w.length > 2);
+
+/** How much of the wanted title/artist shows up in the candidate. */
+export function titleScore(candidate, track) {
+  const want = new Set([...words(track.title), ...words(track.artist)]);
+  const got = words(candidate);
+  if (!want.size || !got.length) return 0;
+  return got.filter((w) => want.has(w)).length / want.size;
+}
+
+/**
+ * SoundCloud has no view counts, so the pick is the closest length inside the
+ * same window the YouTube side uses, then the best title match.
+ */
+export async function pickSoundCloudMatch(track, cfg, bin) {
+  const tool = bin ? asTool(bin) : await resolveYtdlp(cfg);
+  const label = [track.artist, track.title].filter(Boolean).join(' ');
+  const fields = '%(id)s\t%(duration)s\t%(title)s\t%(webpage_url)s';
+  let out = '';
+  try {
+    ({ out } = await run(
+      tool.cmd,
+      [
+        ...tool.args,
+        '--no-warnings',
+        '--no-playlist',
+        '--flat-playlist',
+        '--socket-timeout',
+        '20',
+        '--retries',
+        '1',
+        '--print',
+        fields,
+        `scsearch10:${label}`,
+      ],
+      { timeoutMs: cfg.searchTimeoutMs || 90000, env: tool.env },
+    ));
+  } catch (e) {
+    if (e.code === 'ENOENT') throw e;
+    onError(cfg, `soundcloud search failed (${firstLine(e)})`);
+    return null;
+  }
+
+  const rows = out
+    .split('\n')
+    .map((line) => line.split('\t'))
+    .filter((r) => r[0] && r[0] !== 'NA')
+    .map(([id, duration, title, url]) => ({
+      id,
+      duration: Number(duration) || 0,
+      title: title || '',
+      url: url && url !== 'NA' ? url : null,
+    }));
+  if (!rows.length) return null;
+
+  const want = track.duration || 0;
+  let pool = rows;
+  if (want > 30) {
+    const win = Math.max(20, want * 0.25);
+    const close = rows.filter((r) => r.duration > 0 && Math.abs(r.duration - want) <= win);
+    if (close.length) pool = close;
+  }
+  const wantWords = new Set([...words(track.title), ...words(track.artist)]);
+  const scored = pool.map((r) => {
+    const got = words(r.title);
+    const extra = got.filter((w) => !wantWords.has(w)).length;
+    // "Tulus - Monokrom" beats "... ft. someone" / "... (Andrz edit)": fewer strangers in the title
+    let score = titleScore(r.title, track) - (got.length ? 0.15 * (extra / got.length) : 0);
+    // an edit, a cover or a sped up version is the same words and the wrong song
+    if (NOISE.test(r.title.toLowerCase())) score -= 0.35;
+    const delta = want ? Math.abs((r.duration || want) - want) / want : 0;
+    return { r, score, delta };
+  });
+  scored.sort((a, b) => (Math.abs(b.score - a.score) > 0.01 ? b.score - a.score : a.delta - b.delta));
+  return scored[0].r;
 }
 
 /**
@@ -310,7 +466,7 @@ export async function pickBestMatch(track, cfg, bin) {
         fields,
         `ytsearch10:${label} audio`,
       ],
-      { timeoutMs: cfg.searchTimeoutMs || 90000 },
+      { timeoutMs: cfg.searchTimeoutMs || 90000, env: tool.env },
     ));
   } catch (e) {
     // a missing binary is not a search miss: report it instead of falling back
@@ -375,7 +531,11 @@ export async function resolveAudio(track, cfg, onStatus) {
   }
 
   onStatus?.(`picking the most listened match on YouTube`);
-  const { file, match } = await downloadWithYtdlp(track, dir, cfg);
-  if (match) onStatus?.(`matched "${match.title}" (${match.views.toLocaleString('en-US')} views)`);
-  return { file, source: 'yt-dlp', duration: ffprobeDuration(file), match: match || null };
+  const { file, match, source } = await downloadWithYtdlp(track, dir, cfg);
+  if (match) {
+    const where = source === 'soundcloud' ? 'SoundCloud' : 'YouTube';
+    const views = match.views ? `, ${match.views.toLocaleString('en-US')} views` : '';
+    onStatus?.(`matched "${match.title}" on ${where}${views}`);
+  }
+  return { file, source, duration: ffprobeDuration(file), match: match || null };
 }

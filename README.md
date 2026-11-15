@@ -24,7 +24,7 @@ The command list lives in one place: `src/features.js`. So `w/listcmd`, `w/help`
 `w/play tulus - monokrom` should not play a cover, a live take or a 10 hour loop, so two picks happen:
 
 - **Spotify decides the song.** A title returns several matches and the one with the highest Spotify `popularity` wins. The `w/play` argument is not a guess-by-first-result: with three results called "Monokrom" (live, studio, remix) the studio take wins.
-- **YouTube decides the audio.** `yt-dlp` lists the ten best matches with their view counts, matches whose length is more than 25% away from the Spotify duration are dropped first, and the most viewed survivor is downloaded. That removes the loop and teaser problem: a 10 hour upload with 990M views loses to the 48M view official upload once the length filter is applied. Without Spotify credentials the length filter is skipped, so the most viewed match wins outright.
+- **YouTube decides the audio.** `yt-dlp` lists the ten best matches with their view counts, matches whose length is more than 25% away from the Spotify duration are dropped first, and the most viewed survivor is downloaded. That removes the loop and teaser problem: a 10 hour upload with 990M views loses to the 48M view official upload once the length filter is applied. Without Spotify credentials the length filter is skipped, so the most viewed match wins outright. If YouTube refuses the download (see [When YouTube refuses](#when-youtube-refuses)), the same length window is applied to SoundCloud results and the closest plain upload is used.
 
 Links skip the guessing: a Spotify **track** link plays exactly that track, an **album** or **playlist** link queues every track in order (up to `commands.playlistLimit`, 30 by default). `w/stop` cancels the rest of the queue.
 
@@ -128,6 +128,9 @@ There is no song, lyrics file or audio path in the config. Every `w/play` (and e
 - `ytdlpInstallDir` - optional, default `bin/`. Where a downloaded or hand-uploaded build is looked for and stored.
 - `ytdlpReleaseBase`, `ytdlpReleaseMirrors`, `ytdlpReleaseAsset`, `ytdlpPythonInstall` - optional overrides for the download route (a release of your own, extra mirrors, a pinned asset, or skipping pip).
 - `audioSource` - `"ytdlp"` (default, full song) or `"preview"` (the official 30 second Spotify clip).
+- `audioSources` - default `["youtube", "soundcloud"]`. Where the full song is taken from, in order. YouTube wins when the network is not challenged; when it answers "Sign in to confirm you're not a bot", the download moves to SoundCloud and the song still plays.
+- `ytdlpCookies` - optional path to a `cookies.txt`. A file named `cookies.txt` next to the project is picked up automatically, which is what puts YouTube back in front on a datacenter IP. Also `YTDLP_COOKIES`.
+- `ytdlpYoutubeClient` - optional, for example `"tv"` or `"android"`; passed as `youtube:player_client`. Rotating clients does not get past the bot check, but it is there for networks where one client works and another does not.
 - `lyricOffsetMs` - initial lyric offset in milliseconds (can also be set live with `w/sync`).
 - `stayInVoice` - `true` if the account should stay in voice after the song ends.
 - `video.streamPreview` - `false` (default) saves CPU: the Go Live thumbnail is not rendered from a frame. Set `true` if you want the preview to show.
@@ -157,6 +160,16 @@ Drop that file in `cache/lyrics/` (`cache.lyrics` in the config) and name it aft
 - If the stream looks glitchy or green: lower `bitrateVideo` to 2000 and `fps` to 24.
 - If you want a real desktop capture (Spotify plus an overlay), that is a different path: it needs a virtual X server and a browser, and it is far heavier and more fragile.
 
+## When YouTube refuses
+
+A datacenter IP is regularly told `Sign in to confirm you're not a bot`. That is not a bug in the bot and no player client setting avoids it, so the audio side walks a list of sources instead of insisting on one:
+
+1. YouTube: the most viewed match inside the duration window (the normal path).
+2. SoundCloud: the same song, picked by length and title, with edits and covers pushed down.
+3. `audioSource: "preview"`: the 30 second Spotify clip, when that is all you want.
+
+`audioSources` decides the order. A `cookies.txt` next to the project, exported from a browser that is logged into YouTube, puts YouTube first again and keeps the higher quality audio. Without cookies the SoundCloud copy plays at 96 kbps AAC, which is below the 128 kbps the voice stream carries, so nothing is wasted by transcoding.
+
 ## When yt-dlp is not installed
 
 A container that never had it (a game panel image, a slim distro) answers `ENOENT` for every name and `No module named yt_dlp` for python. The first `w/play` then installs it once and logs one line:
@@ -178,6 +191,7 @@ Verified on this machine (Linux x64, Node 26, FFmpeg 9):
 - the command layer (prefix parsing, aliases, channel filter, user whitelist, `w/sync`)
 - the slide cache: slides are reused when the offset moves, while the output still changes to match the offset
 - full song render: Tulus - Monokrom (28 lines, 194s) -> 2.0 MB, lyrics verified at 100s and 190s
+- source fallback: with YouTube blocked on the server, the same `w/play` resolved through SoundCloud (2.5 MB, 214s) and picked the plain upload over a sped up edit and a featured-artist version
 - yt-dlp discovery and install: a typo'd name falls back to the working binary, a build dropped in `bin/` is used without a download, and on a machine with no yt-dlp at all the standalone build is downloaded (41 MB, 6s), made executable, and then finds the same match (`TULUS - Monokrom`, 162 863 949 views)
 
 Not tested: Discord login, joining voice, and the WebRTC/DAVE handshake. That part needs your account token, so it is only proven once you run `node src/index.js serve`.
@@ -194,7 +208,7 @@ src/slides.js    slide/concat renderer (bg once, 1 PNG per line, 1 encode)
 src/lyrics.js    LRC parser + lrclib.net client
 src/spotify.js   Spotify client credentials (search + metadata)
 src/track.js     query -> track (fallback without Spotify credentials)
-src/resolve.js   track -> audio file (cache -> preview -> yt-dlp), and where yt-dlp comes from
+src/resolve.js   track -> audio file (cache -> preview -> youtube -> soundcloud), and where yt-dlp comes from
 src/ai.js        OpenAI-compatible client for w/help
 src/env.js       .env loader + credential status
 bin/             yt-dlp build (downloaded on first use or uploaded by hand, gitignored)
