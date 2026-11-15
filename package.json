@@ -1,0 +1,30 @@
+{
+  "name": "discord-lyrics-stream",
+  "version": "1.1.0",
+  "description": "Discord selfbot: Go Live with synced song lyrics plus w/* commands",
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "serve": "node src/index.js serve",
+    "build": "node src/index.js build",
+    "play": "node src/index.js play",
+    "help": "node src/index.js help",
+    "test": "node test/commands-test.mjs && node test/cache-test.mjs && node test/lrclib-test.mjs",
+    "test:cmd": "node test/commands-test.mjs",
+    "test:cache": "node test/cache-test.mjs",
+    "test:lrclib": "node test/lrclib-test.mjs",
+    "test:media": "node test/media-path-test.mjs out/lyrics.mp4"
+  },
+  "engines": {
+    "node": ">=22.4.0"
+  },
+  "dependencies": {
+    "@dank074/discord-video-stream": "^7.0.0",
+    "@lng2004/discord.js-selfbot-v13": "^3.7.2"
+  },
+  "allowScripts": {
+    "node-av@6.2.0": true,
+    "zeromq@6.8.0": true
+  }
+}

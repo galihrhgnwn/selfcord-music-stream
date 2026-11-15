@@ -1,0 +1,13 @@
+{
+  "token": null,
+  "guildId": null,
+  "channelId": null,
+  "song": { "title": "A Fairly Long Sample Title So Wrapping Shows Up", "artist": "Test Artist" },
+  "lyricsFile": "test/test.lrc",
+  "audio": "test/song.mp3",
+  "cover": null,
+  "video": { "width": 1280, "height": 720, "fps": 30 },
+  "accent": "8b5cf6",
+  "loop": false,
+  "render": { "out": "out/lyrics.mp4", "force": true }
+}
