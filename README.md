@@ -79,7 +79,7 @@ npm install-scripts approve zeromq
 npm rebuild node-av zeromq
 ```
 
-System requirements: Node >= 22.4, FFmpeg with `libx264`, `libopus`, `libzmq`, and `yt-dlp` on PATH (or set `YTDLP_PATH`).
+System requirements: Node >= 22.4, and FFmpeg with `libx264`, `libopus`, `libzmq`. yt-dlp is optional: it is looked for on PATH and in `bin/`, and installed into `bin/` on first use when it is missing (see [When yt-dlp is not installed](#when-yt-dlp-is-not-installed)).
 
 ## Credentials
 
@@ -123,7 +123,10 @@ There is no song, lyrics file or audio path in the config. Every `w/play` (and e
 - `commands.playlistLimit` - how many tracks an album/playlist link may queue, default 30.
 - `cache.lyrics` - folder for per-song `.lrc` overrides, default `cache/lyrics`.
 - Every path in `config.json` (`render.out`, `cache.*`) is resolved relative to the **folder holding that config**, not the project root. So a config inside `test/` has to write `../cache/...`.
-- `ytdlpPath` - optional. The downloader is discovered automatically: this value, then `YTDLP_PATH` in `.env`, then `yt-dlp` on `PATH`, then `yt-dlp.exe`, then `python3 -m yt_dlp`. A value that cannot run is logged once and skipped, so `"ytdlp"` (a name that does not exist) falls back to the real binary instead of failing with `spawn ytdlp ENOENT`. When nothing works, the error lists what was tried and how to fix it.
+- `ytdlpPath` - optional. In order: this value, `YTDLP_PATH` in `.env`, a build in `bin/`, `yt-dlp` / `yt-dlp.exe` / `ytdlp` / `youtube-dl` on `PATH`, then the Python module (`python3 -m yt_dlp`, including `vendor/`). A value that cannot run is logged once and skipped, so `"ytdlp"` (a name that does not exist) falls back to the real binary instead of failing with `spawn ytdlp ENOENT`.
+- `ytdlpAutoInstall` - default `true`. When nothing above runs, yt-dlp is installed once: `pip install --target vendor yt-dlp`, then the standalone build downloaded into `bin/` (the release page, then two plain GitHub proxies). The file stays on disk, so later starts use it directly. Set it to `false` on a machine where nothing may be downloaded.
+- `ytdlpInstallDir` - optional, default `bin/`. Where a downloaded or hand-uploaded build is looked for and stored.
+- `ytdlpReleaseBase`, `ytdlpReleaseMirrors`, `ytdlpReleaseAsset`, `ytdlpPythonInstall` - optional overrides for the download route (a release of your own, extra mirrors, a pinned asset, or skipping pip).
 - `audioSource` - `"ytdlp"` (default, full song) or `"preview"` (the official 30 second Spotify clip).
 - `lyricOffsetMs` - initial lyric offset in milliseconds (can also be set live with `w/sync`).
 - `stayInVoice` - `true` if the account should stay in voice after the song ends.
@@ -154,6 +157,16 @@ Drop that file in `cache/lyrics/` (`cache.lyrics` in the config) and name it aft
 - If the stream looks glitchy or green: lower `bitrateVideo` to 2000 and `fps` to 24.
 - If you want a real desktop capture (Spotify plus an overlay), that is a different path: it needs a virtual X server and a browser, and it is far heavier and more fragile.
 
+## When yt-dlp is not installed
+
+A container that never had it (a game panel image, a slim distro) answers `ENOENT` for every name and `No module named yt_dlp` for python. The first `w/play` then installs it once and logs one line:
+
+```
+yt-dlp: downloaded yt-dlp_linux to bin/yt-dlp_linux (2026.10.26)
+```
+
+Order: a private `pip install --target vendor yt-dlp`, then the standalone build from the release page into `bin/` (trying two plain GitHub proxies when the release host is unreachable). The result is an ordinary file on disk, so the next start finds it without downloading again. If the machine cannot reach any of them, upload the standalone build to `bin/yt-dlp` by hand; it is made executable on first use. `ytdlpAutoInstall: false` disables the whole route and leaves only what is already on the machine.
+
 ## Test status
 
 Verified on this machine (Linux x64, Node 26, FFmpeg 9):
@@ -165,6 +178,7 @@ Verified on this machine (Linux x64, Node 26, FFmpeg 9):
 - the command layer (prefix parsing, aliases, channel filter, user whitelist, `w/sync`)
 - the slide cache: slides are reused when the offset moves, while the output still changes to match the offset
 - full song render: Tulus - Monokrom (28 lines, 194s) -> 2.0 MB, lyrics verified at 100s and 190s
+- yt-dlp discovery and install: a typo'd name falls back to the working binary, a build dropped in `bin/` is used without a download, and on a machine with no yt-dlp at all the standalone build is downloaded (41 MB, 6s), made executable, and then finds the same match (`TULUS - Monokrom`, 162 863 949 views)
 
 Not tested: Discord login, joining voice, and the WebRTC/DAVE handshake. That part needs your account token, so it is only proven once you run `node src/index.js serve`.
 
@@ -172,16 +186,17 @@ Not tested: Discord login, joining voice, and the WebRTC/DAVE handshake. That pa
 
 ```
 src/index.js     CLI modes: serve / play / build / help
-src/commands.js  w/* command handlers (play, search, stop, sync, help, listcmd)
-src/ui.js        select menu payloads (help topics, search results)
+src/commands.js  w/* command handlers (play, stop, sync, help, listcmd)
+src/ui.js        select menu payloads (help topics)
 src/player.js    orchestration: audio -> lyrics -> video -> voice -> Go Live
 src/features.js  single source of truth for the command list + AI context
 src/slides.js    slide/concat renderer (bg once, 1 PNG per line, 1 encode)
-src/render.js    thin wrapper around slides.js
 src/lyrics.js    LRC parser + lrclib.net client
 src/spotify.js   Spotify client credentials (search + metadata)
 src/track.js     query -> track (fallback without Spotify credentials)
-src/resolve.js   track -> audio file (cache -> preview -> yt-dlp)
+src/resolve.js   track -> audio file (cache -> preview -> yt-dlp), and where yt-dlp comes from
 src/ai.js        OpenAI-compatible client for w/help
 src/env.js       .env loader + credential status
+bin/             yt-dlp build (downloaded on first use or uploaded by hand, gitignored)
+vendor/          python install of yt-dlp, used when pip is available (gitignored)
 ```

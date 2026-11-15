@@ -13,9 +13,12 @@ import { ffprobeDuration } from './slides.js';
  *  3. yt-dlp (default) for the full song
  */
 
-function run(cmd, args, { timeoutMs = 300000, onLine } = {}) {
+function run(cmd, args, { timeoutMs = 300000, onLine, env } = {}) {
   return new Promise((resolve, reject) => {
-    const p = spawn(cmd, args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    const p = spawn(cmd, args, {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: env ? { ...process.env, ...env } : process.env,
+    });
     let out = '';
     let err = '';
     const timer = setTimeout(() => {
@@ -49,27 +52,135 @@ function run(cmd, args, { timeoutMs = 300000, onLine } = {}) {
  * .env or config.json is rewritten: a wrong value is reported and worked
  * around, never silently overridden on disk.
  */
-const YTDLP_CANDIDATES = (configured) => {
+const RELEASE_BASE = 'https://github.com/yt-dlp/yt-dlp/releases/latest/download';
+
+const installDir = (cfg) => path.resolve(cfg.ytdlpInstallDir || path.join(cfg.__dir || process.cwd(), 'bin'));
+
+const localBins = (cfg) => {
+  const dir = installDir(cfg);
+  if (!fs.existsSync(dir)) return [];
+  return fs
+    .readdirSync(dir)
+    .filter((f) => f.startsWith('yt-dlp') || f === 'ytdlp')
+    .map((f) => path.join(dir, f))
+    .filter((f) => {
+      try {
+        return fs.statSync(f).isFile();
+      } catch {
+        return false;
+      }
+    })
+    .map((f) => {
+      // a build uploaded by hand arrives without the executable bit
+      try {
+        if (!(fs.statSync(f).mode & 0o100)) fs.chmodSync(f, 0o755);
+      } catch {
+        /* read-only mount: let the probe report it */
+      }
+      return { cmd: f, args: [] };
+    });
+};
+
+const YTDLP_CANDIDATES = (configured, cfg = {}) => {
   const list = [
-    configured ? { cmd: configured, args: [], configured: true } : null,
+    configured ? { cmd: configured, args: [] } : null,
+    ...localBins(cfg),
     { cmd: 'yt-dlp', args: [] },
     { cmd: 'yt-dlp.exe', args: [] },
     { cmd: 'ytdlp', args: [] },
     { cmd: 'youtube-dl', args: [] },
     { cmd: process.env.PYTHON || 'python3', args: ['-m', 'yt_dlp'] },
     { cmd: 'python', args: ['-m', 'yt_dlp'] },
+    { cmd: process.env.PYTHON || 'python3', args: ['-m', 'yt_dlp'], env: { PYTHONPATH: path.join(cfg.__dir || process.cwd(), 'vendor') } },
   ].filter(Boolean);
 
   const seen = new Set();
   return list.filter((t) => {
-    const key = `${t.cmd} ${t.args.join(' ')}`;
+    const key = `${t.cmd} ${t.args.join(' ')} ${JSON.stringify(t.env || {})}`;
     if (seen.has(key)) return false;
     seen.add(key);
     return true;
   });
 };
 
+/** Standalone builds ship one asset per platform; the name decides which. */
+function releaseAssets(cfg) {
+  if (cfg.ytdlpReleaseAsset) return [cfg.ytdlpReleaseAsset];
+  if (process.platform === 'win32') return ['yt-dlp.exe'];
+  if (process.platform === 'darwin') return ['yt-dlp_macos'];
+  if (process.arch === 'arm64') return ['yt-dlp_linux_aarch64'];
+  return ['yt-dlp_linux', 'yt-dlp_linux_x86'];
+}
+
+async function probe(tool) {
+  const { out } = await run(tool.cmd, [...tool.args, '--version'], { timeoutMs: 30000, env: tool.env });
+  return out.trim().split('\n')[0];
+}
+
 let ytdlpTool = null;
+let installing = null;
+
+/**
+ * Get yt-dlp onto this machine when it is not there at all.
+ *
+ * A container that never had it (a game panel image, a slim distro) reports
+ * ENOENT for every name and "No module named yt_dlp" for python, so both
+ * routes are tried: a private pip install into ./vendor, then the standalone
+ * build from the release page into ./bin. The result is a normal file on
+ * disk, so the next start finds it without downloading anything.
+ */
+export async function installYtdlp(cfg = {}) {
+  const root = cfg.__dir || process.cwd();
+  const dir = installDir(cfg);
+  const attempts = [];
+  const py = process.env.PYTHON || 'python3';
+  const vendor = path.join(root, 'vendor');
+
+  if (cfg.ytdlpPythonInstall !== false) {
+    try {
+      await run(py, ['-m', 'pip', 'install', '--disable-pip-version-check', '--no-input', '--target', vendor, 'yt-dlp'], {
+        timeoutMs: 300000,
+      });
+      const tool = { cmd: py, args: ['-m', 'yt_dlp'], env: { PYTHONPATH: vendor } };
+      const version = await probe(tool);
+      onError(cfg, `yt-dlp: installed the python module into vendor/ (${version})`);
+      return tool;
+    } catch (e) {
+      attempts.push(`pip: ${e.code || e.message.split('\n')[0]}`);
+    }
+  }
+
+  const base = (cfg.ytdlpReleaseBase || RELEASE_BASE).replace(/\/+$/, '');
+  // a host that cannot reach github can still reach one of the plain proxies
+  const mirrors = cfg.ytdlpReleaseMirrors || ['', 'https://gh-proxy.com/', 'https://ghfast.top/'];
+
+  for (const asset of releaseAssets(cfg)) {
+    const file = path.join(dir, asset.replace(/\.exe$/i, ''));
+    const direct = `${base}/${asset}`;
+    for (const mirror of mirrors) {
+      const url = mirror ? `${mirror}${direct}` : direct;
+      try {
+        const res = await fetch(url, { redirect: 'follow' });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const buf = Buffer.from(await res.arrayBuffer());
+        if (buf.length < 100000) throw new Error(`only ${buf.length} bytes`);
+        fs.mkdirSync(dir, { recursive: true });
+        fs.writeFileSync(`${file}.part`, buf, { mode: 0o755 });
+        fs.renameSync(`${file}.part`, file);
+        fs.chmodSync(file, 0o755);
+        const version = await probe({ cmd: file, args: [] });
+        onError(cfg, `yt-dlp: downloaded ${asset} to ${path.relative(root, file)} (${version})`);
+        return { cmd: file, args: [] };
+      } catch (e) {
+        attempts.push(`${mirror ? new URL(mirror).host + ': ' : ''}${asset}: ${e.code || e.message.split('\n')[0]}`);
+      }
+    }
+  }
+
+  throw new Error(
+    `yt-dlp could not be installed automatically (${attempts.join('; ')}). Drop the standalone build at ${path.join(dir, 'yt-dlp')} or set ytdlpPath in config.json / YTDLP_PATH in .env.`,
+  );
+}
 
 /** The first candidate that answers --version, remembered for this process. */
 export async function resolveYtdlp(cfg = {}) {
@@ -77,27 +188,46 @@ export async function resolveYtdlp(cfg = {}) {
 
   const configured = cfg.ytdlpPath || process.env.YTDLP_PATH || null;
   const tried = [];
-  for (const tool of YTDLP_CANDIDATES(configured)) {
-    try {
-      const { out } = await run(tool.cmd, [...tool.args, '--version'], { timeoutMs: 20000 });
-      ytdlpTool = tool;
-      if (configured && tool.cmd !== configured) {
-        onError(cfg, `yt-dlp: "${configured}" did not run, using "${[tool.cmd, ...tool.args].join(' ')}" (${out.trim().split('\n')[0]})`);
+
+  const scan = async () => {
+    for (const tool of YTDLP_CANDIDATES(configured, cfg)) {
+      try {
+        const version = await probe(tool);
+        return { tool, version };
+      } catch (e) {
+        tried.push(`${tool.cmd}${tool.args.length ? ' ' + tool.args.join(' ') : ''} -> ${e.code || e.message.split('\n')[0]}`);
       }
-      return tool;
-    } catch (e) {
-      tried.push(`${tool.cmd}${tool.args.length ? ' ' + tool.args.join(' ') : ''} -> ${e.code || e.message.split('\n')[0]}`);
     }
+    return null;
+  };
+
+  let found = await scan();
+  if (!found && cfg.ytdlpAutoInstall !== false) {
+    installing = installing || installYtdlp(cfg).catch((e) => ({ error: e }));
+    const result = await installing;
+    installing = null;
+    if (result.error) throw new Error(`${result.error.message} | also tried: ${tried.join('; ')}`);
+    ytdlpTool = result;
+    return ytdlpTool;
+  }
+
+  if (found) {
+    ytdlpTool = found.tool;
+    if (configured && found.tool.cmd !== configured) {
+      onError(cfg, `yt-dlp: "${configured}" did not run, using "${[found.tool.cmd, ...found.tool.args].join(' ')}" (${found.version})`);
+    }
+    return ytdlpTool;
   }
 
   throw new Error(
-    `yt-dlp was not found. Tried: ${tried.join('; ')}. Install it (pip install -U yt-dlp) or point ytdlpPath in config.json / YTDLP_PATH in .env at the full path of the binary.`,
+    `yt-dlp was not found and could not be installed. Tried: ${tried.join('; ')}. Install it (pip install -U yt-dlp), drop the standalone build next to the project, or point ytdlpPath in config.json / YTDLP_PATH in .env at the binary.`,
   );
 }
 
 /** For tests and diagnostics: forget the cached tool. */
 export function resetYtdlpCache() {
   ytdlpTool = null;
+  installing = null;
 }
 
 const asTool = (bin) => (typeof bin === 'string' ? { cmd: bin, args: [] } : bin);

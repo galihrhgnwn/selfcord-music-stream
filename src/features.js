@@ -91,7 +91,7 @@ export const HELP_TOPICS = [
   },
   {
     q: 'w/play says yt-dlp was not found',
-    a: 'The downloader is picked automatically: `ytdlpPath` in `config.json`, then `YTDLP_PATH` in `.env`, then `yt-dlp` on PATH, then `yt-dlp.exe`, then the Python module (`python3 -m yt_dlp`). A name that does not run is skipped with one log line, so a typo like `ytdlp` no longer breaks playback. If every candidate fails, install it (`pip install -U yt-dlp`) or point `ytdlpPath` at the full path, for example `/usr/local/bin/yt-dlp`.',
+    a: 'The downloader is looked for first: `ytdlpPath` in `config.json`, `YTDLP_PATH` in `.env`, a build in `bin/`, `yt-dlp` on PATH, then the Python module. If none of them run and `ytdlpAutoInstall` is on, it installs itself once (`pip --target vendor`, or the standalone build downloaded into `bin/`), and later starts reuse that file. A build uploaded by hand into `bin/yt-dlp` works too, even without the executable bit. If everything fails the error names the missing path, and pointing `ytdlpPath` at the binary fixes it.',
   },
   {
     q: 'Which voice channel does the bot join?',

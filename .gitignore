@@ -4,3 +4,6 @@ cache/
 config.json
 .env
 *.log
+# yt-dlp downloaded automatically (or dropped in by hand)
+bin/
+vendor/
