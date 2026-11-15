@@ -15,7 +15,7 @@ export const COMMANDS = [
   {
     name: 'w/search',
     args: '<keywords>',
-    desc: 'Show 6 Spotify search results as an interactive list (reactions 1-6), pick one to play.',
+    desc: 'Show 6 Spotify search results in a select menu, pick one to play.',
     aliases: ['w/s'],
   },
   {
@@ -117,7 +117,7 @@ export function helpTopicsText(prefix = PREFIX) {
     '',
     ...HELP_TOPICS.map((t, i) => `\`${i + 1}\`. ${t.q}`),
     '',
-    `Type \`${prefix}help <number>\` for one of these answers.`,
+    `Pick one from the menu below, or type \`${prefix}help <number>\`.`,
     'If your question is not on the list, reply to this message with what you want to do and the AI works out the steps for you.',
   ].join('\n');
 }

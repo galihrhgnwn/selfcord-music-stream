@@ -2,9 +2,14 @@ import { PREFIX, COMMANDS, commandsText, compactList, aiContext, helpTopicsText,
 import { isSpotifyUrl, spotifyIdFromUrl, getTrack, spotifyConfigured, searchTracks } from './spotify.js';
 import { trackFromQuery } from './track.js';
 import { askAI, aiConfigured } from './ai.js';
+import { COMPONENT_INTERACTIONS, helpMenu, searchMenu } from './ui.js';
 
-const NUM_EMOJI = ['1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣', '6️⃣'];
-const CANCEL_EMOJI = '❌';
+/**
+ * The lists are select menus. Every pick also has a plain command form
+ * (`w/play 3`, `w/help 2`), because the selfbot build cannot receive the
+ * MESSAGE_COMPONENT interaction that a click produces.
+ */
+
 /** How long a w/help topic list stays open for replies. */
 const HELP_TTL = 30 * 60 * 1000;
 
@@ -32,6 +37,16 @@ export function attachCommands({ client, player, cfg, log = console.log }) {
   const helpMessages = new Map();
 
   const say = (msg, text) => msg.channel.send(clip(text)).catch((e) => log('failed to send message:', e?.message || e));
+
+  /** Text plus a select menu; if the API refuses the components the text still goes. */
+  async function sayWithMenu(msg, text, components) {
+    try {
+      return await msg.channel.send({ content: clip(text), components });
+    } catch (e) {
+      log('select menu rejected, sending plain text instead:', e?.message || e);
+      return await say(msg, text);
+    }
+  }
 
   async function statusMessage(msg, text) {
     const m = await say(msg, text);
@@ -148,41 +163,12 @@ export function attachCommands({ client, player, cfg, log = console.log }) {
     const text = [
       `**Results for "${arg}"**`,
       '',
-      ...results.map((t, i) => `${NUM_EMOJI[i]} **${t.title}** - ${t.artist} \`${fmtDur(t.duration)}\``),
+      ...results.map((t, i) => `\`${i + 1}\`. **${t.title}** - ${t.artist} \`${fmtDur(t.duration)}\``),
       '',
-      `React with a number to play it, or type \`${prefix}play <number>\`.`,
+      `Pick one from the menu below, or type \`${prefix}play <number>\`.`,
     ].join('\n');
-    await status.edit(text);
-
-    const target = status.msg;
-    if (!target) return;
-    try {
-      for (let i = 0; i < results.length; i++) await target.react(NUM_EMOJI[i]);
-      await target.react(CANCEL_EMOJI);
-    } catch (e) {
-      log('failed to add reactions:', e?.message || e);
-      return;
-    }
-
-    // wait a moment so the selfbot's own reactions are not collected as input
-    await new Promise((r) => setTimeout(r, 1800));
-    let collected;
-    try {
-      collected = await target.awaitReactions({ max: 1, time: 60000, errors: ['time'] });
-    } catch {
-      return;
-    }
-    const reaction = collected.first();
-    if (!reaction) return;
-    const idx = NUM_EMOJI.indexOf(reaction.emoji.name);
-    if (idx === -1 || !results[idx]) return;
-    const picked = results[idx];
-    const st2 = await statusMessage(msg, `▶️ **${picked.title}** - ${picked.artist}\npicked from the list, preparing...`);
-    try {
-      await startPlayback(msg, picked, st2);
-    } catch (e) {
-      await st2.fail(e.message);
-    }
+    await status.edit(`found ${results.length} results, menu below`);
+    await sayWithMenu(msg, text, [searchMenu(results, msg.channelId)]);
   }
 
   async function cmdStop(msg) {
@@ -245,9 +231,63 @@ export function attachCommands({ client, player, cfg, log = console.log }) {
       if (topic) return say(msg, `**${topic.index + 1}. ${topic.q}**\n\n${topic.a}`);
       return askAbout(msg, arg);
     }
-    const sent = await say(msg, helpTopicsText(prefix));
+    const sent = await sayWithMenu(msg, helpTopicsText(prefix), [helpMenu()]);
     if (sent?.id) rememberHelpMessage(msg.channelId, sent.id);
     return sent;
+  }
+
+  /**
+   * Handle a select menu pick.
+   *
+   * Only builds that dispatch MESSAGE_COMPONENT interactions reach this; the
+   * selfbot fork drops that packet, which is why the numeric forms stay.
+   */
+  async function handleComponent(interaction) {
+    if (typeof interaction?.isStringSelectMenu !== 'function' || !interaction.isStringSelectMenu()) return;
+    if (!allowOtherUsers && interaction.user?.id !== client.user?.id) return;
+    const [kind, channelId] = String(interaction.customId || '').split(':');
+    const value = interaction.values?.[0];
+    if (value === undefined) return;
+
+    const channel = interaction.channel || (channelId ? await client.channels.fetch(channelId).catch(() => null) : null);
+    if (!channel) return;
+
+    const answer = (payload) => {
+      const body = { ...payload, content: payload.content ? clip(payload.content) : payload.content };
+      const viaUpdate =
+        typeof interaction.update === 'function'
+          ? Promise.resolve(interaction.update(body)).catch(() => null)
+          : Promise.resolve(null);
+      return viaUpdate.then((done) => done || Promise.resolve(interaction.reply?.(body)).catch(() => null));
+    };
+
+    if (kind === 'help') {
+      const topic = helpTopicAt(value);
+      if (!topic) return;
+      return answer({ content: `**${topic.index + 1}. ${topic.q}**\n\n${topic.a}`, components: [] });
+    }
+
+    if (kind === 'search') {
+      const results = lastSearch.get(channelId) || lastSearch.get(channel.id) || [];
+      const picked = results[Number(value)];
+      if (!picked) return answer({ content: 'that list expired, run the search again', components: [] });
+
+      answer({ content: `**${picked.title}** - ${picked.artist}\npicked from the list, preparing...`, components: [] });
+      const ctx = {
+        channel,
+        channelId: channel.id,
+        guild: channel.guild || interaction.guild || null,
+        guildId: channel.guildId || interaction.guildId || cfg.guildId,
+        member: interaction.member || null,
+      };
+      const st = await statusMessage(ctx, 'preparing...');
+      try {
+        await startPlayback(ctx, picked, st);
+      } catch (e) {
+        await st.fail(e.message);
+      }
+    }
+    return undefined;
   }
 
   async function handleMessage(msg) {
@@ -289,10 +329,18 @@ export function attachCommands({ client, player, cfg, log = console.log }) {
     handleMessage(msg).catch((e) => log('command error:', e?.stack || e?.message || e));
   });
 
+  client.on('interactionCreate', (interaction) => {
+    handleComponent(interaction).catch((e) => log('component error:', e?.stack || e?.message || e));
+  });
+
+  if (!COMPONENT_INTERACTIONS) {
+    log('this build has no INTERACTION_CREATE handler, so a menu click cannot reach the process; use w/play <n> or w/help <n>');
+  }
+
   return {
     prefix,
     handleMessage,
     /** used by CLI mode: run a single command without Discord */
-    _internals: { findTrack, voiceTarget, isHelpReply },
+    _internals: { findTrack, voiceTarget, isHelpReply, handleComponent, lastSearch }, 
   };
 }

@@ -9,7 +9,7 @@ This is not a desktop capture: the lyrics are rendered into video frames (1280x7
 Every command is typed in any channel this account can read. If you are already in a voice channel, the song plays there.
 
 - `w/play <song title | spotify link | search result number>` (alias `w/p`) - find the song on Spotify, download the audio, fetch synced lyrics, then open Go Live.
-- `w/search <keywords>` (alias `w/s`) - show 6 Spotify results as an interactive list. React with 1-6 to play, or `❌` to cancel. You can also follow up with `w/play 3`.
+- `w/search <keywords>` (alias `w/s`) - show 6 Spotify results in a select menu; picking one plays it. The same list is reachable as `w/play 3`.
 - `w/stop` (alias `w/leave`, `w/off`) - stop Go Live and leave the voice channel.
 - `w/sync <milliseconds>` - shift the lyric timing. `w/sync +500` when the lyrics are late, `w/sync -500` when they are early. Slides are cached, so this is only a re-mux (far faster than the first build) and the stream restarts from the beginning.
 - `w/help [topic number | question]` - without an argument: the list of help topics. With a number: that answer, no AI involved. With a question, or as a reply to the topic list in your own words: the AI works out the steps, and it only answers questions about this bot.
@@ -24,6 +24,17 @@ The command list lives in one place: `src/features.js`. So `w/listcmd`, `w/help`
 When the topic list does not cover the problem, the user replies to that message and describes the goal in their own words, prefix or not. The AI maps the goal onto the real features and returns the steps. The system prompt pins it to this bot: an unrelated question gets a one line refusal instead of an answer. The reply window is 30 minutes.
 
 Without `AI_API_URL` only the numbered topics work; `w/help <question>` then answers with the topic list plus a note about the missing setting.
+
+## Select menus, and what a selfbot can receive
+
+Lists are sent as select menus: `w/help` with the topics, `w/search` with the results. `src/ui.js` builds them with `MessageActionRow` plus a `STRING_SELECT` component, the v13 shapes of what discord.js v14 calls `ActionRowBuilder` and `StringSelectMenuBuilder`. Labels, descriptions and values are trimmed to the API limits (25 options, 100 characters, 150 for the placeholder).
+
+A user account cannot receive a component click. Discord routes `MESSAGE_COMPONENT` interactions to the application that owns the message, and a plain user account owns no application: `@lng2004/discord.js-selfbot-v13` ships no `INTERACTION_CREATE` gateway handler, so the packet never becomes an `interactionCreate` event and the click fails on the clicker's side. The menu is therefore a display, and every list keeps a typed form that always works:
+
+- `w/help 3` answers topic 3
+- `w/play 3` plays result 3 of the last `w/search` in that channel
+
+The handler is wired anyway (`handleComponent` in `src/commands.js`, registered on `interactionCreate`): the moment a build does deliver the event (a fork with the gateway handler, or a bot token), picking from the menu plays the track or answers the topic with no other change. On startup the process logs one line when the build cannot deliver it.
 
 ## Why it stays light and drift-free
 
@@ -144,6 +155,7 @@ Not tested: Discord login, joining voice, and the WebRTC/DAVE handshake. That pa
 ```
 src/index.js     CLI modes: serve / play / build / help
 src/commands.js  w/* command handlers (play, search, stop, sync, help, listcmd)
+src/ui.js        select menu payloads (help topics, search results)
 src/player.js    orchestration: audio -> lyrics -> video -> voice -> Go Live
 src/features.js  single source of truth for the command list + AI context
 src/slides.js    slide/concat renderer (bg once, 1 PNG per line, 1 encode)
