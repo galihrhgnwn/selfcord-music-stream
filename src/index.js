@@ -5,12 +5,10 @@ import { fileURLToPath } from 'node:url';
 import { loadEnv, envStatus, ENV_KEYS } from './env.js';
 import { Client } from '@lng2004/discord.js-selfbot-v13';
 import { Streamer } from '@dank074/discord-video-stream';
-import { loadLrcFile, fetchSyncedLyrics, sanitize } from './lyrics.js';
-import { renderLyricVideo, ffprobeDuration } from './render.js';
 import { Player } from './player.js';
 import { attachCommands } from './commands.js';
 import { commandsText } from './features.js';
-import { trackFromQuery } from './track.js';
+import { resolvePlayable } from './track.js';
 import { spotifyConfigured } from './spotify.js';
 import { aiConfigured } from './ai.js';
 
@@ -70,11 +68,14 @@ function printHelpCli() {
 discord-lyrics-stream - Discord selfbot: Go Live lyric video + song audio
 
 Usage:
-  node src/index.js                    # auto: serve when a token exists, otherwise render a preview
-  node src/index.js serve              # log in and listen for w/* commands
-  node src/index.js play "artist - title"
-  node src/index.js build              # render the lyric video only (to inspect the result)
+  node src/index.js                              # auto: serve when a token exists, otherwise build
+  node src/index.js serve                        # log in and listen for w/* commands
+  node src/index.js build "<song | Spotify link>"  # render the lyric video only, no Discord
+  node src/index.js play  "<song | Spotify link>"  # stream it once in the configured channel
   node src/index.js help
+
+The lyrics always belong to the song being played: build, play and w/play all
+resolve the song first, then look up its lyrics.
 
 Options: --config <file>  --channel <voiceChannelId>  --offset <ms>  --render-only
 
@@ -93,79 +94,38 @@ ${ENV_KEYS.map(([k, d]) => `- ${k}: ${d}`).join('\n')}
 `);
 }
 
-async function resolveLyrics(cfg) {
-  const lyrFile = resolvePath(cfg.lyricsFile, cfg);
-  if (lyrFile) {
-    if (!fs.existsSync(lyrFile)) die(`lyricsFile does not exist: ${lyrFile}`);
-    log(`Lyrics from file: ${path.basename(lyrFile)}`);
-    const parsed = loadLrcFile(lyrFile);
-    parsed.lines = sanitize(parsed.lines);
-    if (!parsed.lines.length) die('The .lrc file has no timestamped lines. Use the [mm:ss.xx]text format.');
-    return parsed;
-  }
-
-  const song = cfg.song || {};
-  if (!song.title) die('Set song.title or lyricsFile in config.json');
-  log(`Looking for synced lyrics on lrclib: ${song.artist ? song.artist + ' - ' : ''}${song.title}`);
-  try {
-    const parsed = await fetchSyncedLyrics({
-      title: song.title,
-      artist: song.artist,
-      album: song.album,
-      duration: cfg.audio ? ffprobeDuration(resolvePath(cfg.audio, cfg)) : song.duration,
-    });
-    if (!parsed) die(`No synced lyrics found for "${song.title}". Use a manual lyricsFile (.lrc).`);
-    parsed.lines = sanitize(parsed.lines);
-    if (!parsed.lines.length) die('The lyrics returned by lrclib were empty after cleanup.');
-    log(`Got ${parsed.lines.length} lines (${parsed.source})`);
-    return parsed;
-  } catch (e) {
-    die(`Failed to fetch lyrics: ${e.message}`);
-  }
+/** One-line description used in the logs. */
+function describe(track) {
+  return `${track.title}${track.artist ? ` - ${track.artist}` : ''}${track.synthetic ? ' (without Spotify)' : ''}`;
 }
 
+/** Resolve the CLI argument the same way w/play does. */
+async function trackFromArgs(cfg, args, { cap = 30 } = {}) {
+  const query = args._.slice(1).join(' ').trim() || (typeof args.song === 'string' ? args.song.trim() : '');
+  if (!query) die('Give it a song: node src/index.js build "Tulus - Monokrom" (a title or a Spotify link)');
+  const req = await resolvePlayable(query, { cap });
+  for (const t of req.tracks) log(`Track: ${describe(t)}`);
+  if (req.collection) log(`Collection: ${req.collection}`);
+  return req;
+}
+
+/**
+ * Render the lyric video for one song and stop there: no Discord, no stream.
+ * The song is resolved first, so the rendered lyrics are the ones of that
+ * song, exactly like the live path.
+ */
 async function buildOnly(cfg, args) {
-  const lyrics = await resolveLyrics(cfg);
+  const req = await trackFromArgs(cfg, args, { cap: 1 });
+  const track = req.tracks[0];
+  const player = new Player({ client: null, streamer: null, cfg, log });
+  const { audio, lyrics, video } = await player.renderOnly(track, (m) => log(m));
+
   const out = resolvePath(cfg.render?.out || 'out/lyrics.mp4', cfg);
-  const audio = resolvePath(cfg.audio, cfg);
-  const cover = resolvePath(cfg.cover, cfg);
-  const force = cfg.render?.force === true || args._.includes('build');
-
-  if (audio && !fs.existsSync(audio)) die(`audio does not exist: ${audio}`);
-  if (cover && !fs.existsSync(cover)) die(`cover does not exist: ${cover}`);
-
-  if (!force && fs.existsSync(out)) {
-    const st = fs.statSync(out);
-    const lrcFile = resolvePath(cfg.lyricsFile, cfg);
-    const fresh = lrcFile ? st.mtimeMs >= fs.statSync(lrcFile).mtimeMs : true;
-    if (fresh && st.size > 10000) {
-      log(`Using the cached video: ${path.relative(ROOT, out)} (${(st.size / 1048576).toFixed(1)} MB)`);
-      return out;
-    }
-  }
-
-  const meta = lyrics.meta || {};
-  log(`Rendering the lyric video ${cfg.video?.width || 1280}x${cfg.video?.height || 720} @${cfg.video?.fps || 30}fps -> ${path.relative(ROOT, out)}`);
-  const t0 = Date.now();
-  const res = await renderLyricVideo({
-    lines: lyrics.lines,
-    out,
-    title: cfg.song?.title || meta.ti || '',
-    artist: cfg.song?.artist || meta.ar || '',
-    cover,
-    audio,
-    width: cfg.video?.width || 1280,
-    height: cfg.video?.height || 720,
-    fps: cfg.video?.fps || 30,
-    font: cfg.font ? resolvePath(cfg.font, cfg) : undefined,
-    accent: cfg.accent || '8b5cf6',
-    offsetMs: Number(cfg.lyricOffsetMs || 0),
-    crf: cfg.video?.crf,
-    preset: cfg.video?.preset,
-    concurrency: cfg.video?.concurrency,
-  });
-  log(`Render finished in ${((Date.now() - t0) / 1000).toFixed(1)}s, duration ${res.duration.toFixed(1)}s -> ${path.relative(ROOT, res.out)}`);
-  return res.out;
+  fs.mkdirSync(path.dirname(out), { recursive: true });
+  if (path.resolve(video.file) !== path.resolve(out)) fs.copyFileSync(video.file, out);
+  log(`${lyrics.lines.length} lyric lines for "${track.title}", ${Math.round(video.duration || 0)}s of audio via ${audio.source}`);
+  log(`Video: ${out}${video.cached ? ' (reused a cached build)' : ''}`);
+  return out;
 }
 
 async function makeClient(cfg) {
@@ -209,30 +169,31 @@ async function serve(cfg) {
 async function playOnce(cfg, args) {
   if (!cfg.token) die('Play mode needs DISCORD_TOKEN (or "token" in config.json)');
   if (!cfg.channelId) die('channelId is empty in config.json');
-  const query = args._.slice(1).join(' ').trim() || [cfg.song?.artist, cfg.song?.title].filter(Boolean).join(' ');
-  if (!query) die('Give it a song: node src/index.js play "Tulus - Monokrom"');
-  const track = await trackFromQuery(query);
-  log(`Track: ${track.title}${track.artist ? ' - ' + track.artist : ''}${track.synthetic ? ' (without Spotify)' : ''}`);
+  const req = await trackFromArgs(cfg, args, { cap: Number(cfg.commands?.playlistLimit) || 30 });
 
   const { client, streamer } = await makeClient(cfg);
   const player = new Player({ client, streamer, cfg, log });
   const channel = await client.channels.fetch(cfg.channelId).catch(() => null);
   if (!channel) die(`Channel ${cfg.channelId} was not found / not reachable by this account`);
 
-  const res = await player.play({
-    track,
-    channelId: channel.id,
-    guildId: channel.guildId || cfg.guildId,
-    onStatus: (m) => log(m),
-  });
-  log('Finished:', JSON.stringify(res));
+  for (const track of req.tracks) {
+    const res = await player.play({
+      track,
+      channelId: channel.id,
+      guildId: channel.guildId || cfg.guildId,
+      onStatus: (m) => log(m),
+    });
+    log('Finished:', JSON.stringify(res));
+    if (!res.ok) break;
+  }
+
   try {
     await player.stop();
   } catch {}
   try {
     client.destroy();
   } catch {}
-  process.exit(res?.ok ? 0 : 1);
+  process.exit(0);
 }
 
 async function main() {

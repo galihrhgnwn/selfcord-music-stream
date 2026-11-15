@@ -44,24 +44,57 @@ export class Player {
     return dir;
   }
 
+  /** Where a hand-written .lrc for one song lives. */
+  lyricsDir() {
+    const dir = path.resolve(this.cfg.__dir, this.cfg.cache?.lyrics || 'cache/lyrics');
+    fs.mkdirSync(dir, { recursive: true });
+    return dir;
+  }
+
+  /**
+   * A manual .lrc for THIS track, if the user dropped one in. There is no
+   * config-wide lyrics file on purpose: the lyrics always belong to the song
+   * being played, so an override is looked up per track and never leaks into
+   * the next song.
+   */
+  lyricsOverride(track) {
+    const slug = (v) =>
+      String(v || '')
+        .toLowerCase()
+        .normalize('NFKD')
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-+|-+$/g, '');
+    const dir = this.lyricsDir();
+    const names = [`${track.id}.lrc`, `${slug(`${track.artist || track.artists?.[0] || ''} ${track.title}`)}.lrc`];
+    return names.map((n) => path.join(dir, n)).find((f) => fs.existsSync(f)) || null;
+  }
+
+  /**
+   * Lyrics for the track being played: a per-track .lrc override first, then
+   * lrclib, matched by this track's title, artist and duration.
+   */
   async lyricsFor(track, duration) {
-    if (this.cfg.lyricsFile) {
-      const raw = this.cfg.lyricsFile;
-      const file = path.isAbsolute(raw) ? raw : path.resolve(this.cfg.__dir, raw);
-      if (!fs.existsSync(file)) throw new Error(`lyricsFile does not exist: ${file}`);
-      const parsed = loadLrcFile(file);
+    const override = this.lyricsOverride(track);
+    if (override) {
+      const parsed = loadLrcFile(override);
       parsed.lines = sanitize(parsed.lines);
-      if (!parsed.lines.length) throw new Error('the .lrc file has no timestamped lines');
-      parsed.source = 'lrc-file';
+      if (!parsed.lines.length) throw new Error(`${path.basename(override)} has no timestamped lines`);
+      parsed.source = `lrc-file ${path.basename(override)}`;
+      this.log(`lyrics for "${track.title}" from ${path.basename(override)}`);
       return parsed;
     }
+
     const parsed = await fetchSyncedLyrics({
       title: track.title,
       artist: track.artists?.[0] || track.artist,
       album: track.album,
       duration,
     });
-    if (!parsed) throw new Error(`no synced lyrics found for "${track.title}"`);
+    if (!parsed) {
+      throw new Error(
+        `no synced lyrics on lrclib for "${track.title}"${track.artist ? ` by ${track.artist}` : ''} - drop a .lrc at ${path.relative(this.cfg.__dir, this.lyricsDir())}/${track.id}.lrc to provide them`,
+      );
+    }
     parsed.lines = sanitize(parsed.lines);
     if (!parsed.lines.length) throw new Error('the lyrics returned by lrclib were empty');
     return parsed;
@@ -200,6 +233,21 @@ export class Player {
       } catch {}
     }
     return { ok: true, duration: video.duration, lyrics: lyrics.lines.length, source: audio.source };
+  }
+
+  /**
+   * The same pipeline as play(), with no Discord involved: resolve the audio,
+   * fetch the lyrics of THIS track, build the mp4. Used by
+   * `node src/index.js build "<song>"` to inspect the result offline.
+   */
+  async renderOnly(track, onStatus) {
+    onStatus?.('1/3 resolving the audio');
+    const audio = await resolveAudio(track, this.cfg, onStatus);
+    onStatus?.('2/3 fetching synced lyrics');
+    const lyrics = await this.lyricsFor(track, audio.duration ?? track.duration);
+    onStatus?.('3/3 building the lyric video');
+    const video = await this.ensureVideo(track, audio, lyrics, onStatus, { force: this.cfg.render?.force === true });
+    return { track, audio, lyrics, video };
   }
 
   /** Start of a new play request; anything still looping on an older token stops. */

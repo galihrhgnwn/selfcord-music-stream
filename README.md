@@ -29,6 +29,12 @@ The command list lives in one place: `src/features.js`. So `w/listcmd`, `w/help`
 Links skip the guessing: a Spotify **track** link plays exactly that track, an **album** or **playlist** link queues every track in order (up to `commands.playlistLimit`, 30 by default). `w/stop` cancels the rest of the queue.
 
 
+## Lyrics and voice follow the song and the caller
+
+- **Lyrics belong to the song being played.** `w/play` resolves a track first (Spotify popularity, or exactly what a link points at) and that same track, with its title, artist and duration, is what lrclib is queried with. Nothing in `config.json` pins a song, so a queue of ten tracks looks up ten different lyric sets. A per-song `.lrc` in `cache/lyrics/` overrides the lookup for that one song.
+- **The stream opens where the caller sits.** The bot joins the voice channel of the user who typed the command, so with `commands.allowOtherUsers` on, another user gets the stream in their own channel. If that user is not in a voice channel, `channelId` is used as a fallback.
+
+
 ## How `w/help` works
 
 `w/help` posts a numbered list of topics (starting a stream, out of sync lyrics, Spotify not configured, and so on). Each answer is static text kept in `src/features.js`, so the list works with no AI, no network and no credentials.
@@ -101,20 +107,22 @@ node src/index.js serve                # log in and listen for w/* commands
 Other modes:
 
 ```bash
-node src/index.js play "Tulus - Monokrom"   # play once without a command
-node src/index.js build                     # render the lyric video only (to check the result)
-node src/index.js help                      # command list + credential status
+node src/index.js build "Tulus - Monokrom"                  # render the lyric video only, no Discord
+node src/index.js build "https://open.spotify.com/track/..." # same, from a Spotify link
+node src/index.js play  "Tulus - Monokrom"                  # stream it once in the configured channel
+node src/index.js help                                      # command list + credential status
 ```
 
-When `token` is empty, `node src/index.js` only renders and exits, it never tries to log in.
+The mode argument is resolved exactly like `w/play` resolves it, so the CLI renders the lyrics of the song you asked for. When `token` is empty, `node src/index.js` only builds and exits, it never tries to log in.
 
 ## Configuration (`config.json`)
 
-- `channelId` - default voice channel when the account is not already in one.
-- Every path in `config.json` (`audio`, `lyricsFile`, `render.out`, `cache.*`) is resolved relative to the **folder holding that config**, not the project root. So a config inside `test/` has to write `../cache/audio/...`.
-- `song.title` / `song.artist` - used to look up lyrics automatically on lrclib (`build` mode and `play` without an argument).
-- `lyricsFile` - path to a manual `.lrc`. When set, the automatic lyric lookup is skipped.
-- `audio` - local song file (mp3/m4a/wav) for `build` mode.
+There is no song, lyrics file or audio path in the config. Every `w/play` (and every CLI `build`/`play`) resolves its own song, downloads its own audio and looks up its own lyrics, so what you hear and what you see always belong to the same song.
+
+- `channelId` - only a fallback: normally the stream opens in the voice channel of whoever typed the command.
+- `commands.playlistLimit` - how many tracks an album/playlist link may queue, default 30.
+- `cache.lyrics` - folder for per-song `.lrc` overrides, default `cache/lyrics`.
+- Every path in `config.json` (`render.out`, `cache.*`) is resolved relative to the **folder holding that config**, not the project root. So a config inside `test/` has to write `../cache/...`.
 - `audioSource` - `"ytdlp"` (default, full song) or `"preview"` (the official 30 second Spotify clip).
 - `lyricOffsetMs` - initial lyric offset in milliseconds (can also be set live with `w/sync`).
 - `stayInVoice` - `true` if the account should stay in voice after the song ends.
@@ -135,7 +143,7 @@ When `token` is empty, `node src/index.js` only renders and exits, it never trie
 [00:16.80]Second line
 ```
 
-Then set `"lyricsFile": "lyrics/song.lrc"`. The `[mm:ss.xx]` format is required; a file without timestamps is rejected.
+Drop that file in `cache/lyrics/` (`cache.lyrics` in the config) and name it after the song, either `<spotify track id>.lrc` or `artist-title.lrc` in lowercase with dashes, for example `tulus-monokrom.lrc`. The override applies to that song only, and it wins over lrclib. The `[mm:ss.xx]` format is required; a file without timestamps is rejected.
 
 ## Things you should know
 

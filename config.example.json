@@ -2,21 +2,10 @@
   "token": "PUT_YOUR_ACCOUNT_TOKEN_HERE",
   "guildId": "SERVER_ID",
   "channelId": "VOICE_CHANNEL_ID",
-
-  "song": {
-    "title": "Song Title",
-    "artist": "Artist Name",
-    "album": null
-  },
-
-  "lyricsFile": null,
-  "audio": null,
-  "cover": null,
   "audioSource": "ytdlp",
   "lyricOffsetMs": 0,
   "stayInVoice": false,
   "ytdlpPath": null,
-
   "video": {
     "width": 1280,
     "height": 720,
@@ -30,24 +19,20 @@
     "crf": 30,
     "concurrency": 4
   },
-
   "accent": "8b5cf6",
   "font": null,
-  "loop": false,
-
   "commands": {
     "prefix": "w/",
     "channels": [],
     "allowOtherUsers": false,
     "playlistLimit": 30
   },
-
   "cache": {
     "audio": "cache/audio",
     "video": "cache/video",
-    "slides": "cache/slides"
+    "slides": "cache/slides",
+    "lyrics": "cache/lyrics"
   },
-
   "render": {
     "out": "out/lyrics.mp4",
     "force": false

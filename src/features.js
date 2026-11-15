@@ -43,6 +43,8 @@ export const FEATURES = [
   'Go Live content: a 1280x720 lyric video that runs in sync with the song, while the audio is sent to the voice channel too.',
   'Song source: Spotify Web API search (client credentials). Metadata, cover art and duration come from Spotify.',
   'One song, picked for you: a title returns several matches, and the most popular one (highest Spotify popularity) is played, so a title shared by several versions resolves to the one people listen to.',
+  'Lyrics follow the song being played: the track that w/play resolves is the one searched on lrclib (title, artist and duration), so the stream always shows that song. There is no fixed song or lyrics file in config.json. A hand-written .lrc in cache/lyrics named after the track overrides the lookup for that song alone.',
+  'The voice channel is the caller\'s: the bot joins whichever channel the user who typed w/play is sitting in, so another user can get the stream in their own channel. config.channelId is only the fallback.',
   'Spotify links: a track link plays that exact track, an album or playlist link queues every track and plays them in order (capped by commands.playlistLimit, 30 by default).',
   'Audio match: yt-dlp lists the ten best YouTube matches and the most viewed one wins, after matches that are far from the Spotify duration are removed. Full audio always comes from yt-dlp, because the Spotify API cannot stream full tracks.',
   'Full audio is fetched with yt-dlp because the Spotify API does not allow streaming full tracks (DRM). An official 30 second preview is available through audioSource: "preview".',
@@ -84,7 +86,11 @@ export const HELP_TOPICS = [
   },
   {
     q: 'No synced lyrics found for my song',
-    a: 'lrclib.net has no synced version of that track. Write a `.lrc` file with `[mm:ss.xx]text` lines, point `lyricsFile` at it in `config.json`, and the automatic lookup is skipped. Files without timestamps are rejected.',
+    a: 'lrclib.net has no synced version of that track. Drop a `.lrc` file with `[mm:ss.xx]text` lines into `cache/lyrics/` (or whatever `cache.lyrics` points at) and name it after the song: `<track id>.lrc`, or `artist-title.lrc` in lowercase with dashes. It is picked up for that song only, and the automatic lookup is skipped. Files without timestamps are rejected.',
+  },
+  {
+    q: 'Which voice channel does the bot join?',
+    a: 'The one the user who typed the command is sitting in. With `commands.allowOtherUsers` on, whoever runs `w/play` gets the stream in their own channel, even if that is not yours. If that user is not in a voice channel at all, the bot falls back to `channelId` in `config.json`, and if that is empty too the command answers that you are not in a voice channel.',
   },
   {
     q: 'The stream stutters, looks green or freezes',
@@ -156,7 +162,7 @@ export function aiContext() {
     'Questions already answered without AI (the help topics):',
     ...HELP_TOPICS.map((t, i) => `- ${i + 1}. ${t.q}`),
     '',
-    'Settings live in config.json: token, guildId, channelId, song, lyricsFile, audio, cover, video (width/height/fps/includeAudio/streamPreview), accent, loop, audioSource, lyricOffsetMs, stayInVoice, commands (prefix/channels/allowOtherUsers), cache, render.',
+    'Settings live in config.json: token, guildId, channelId (only a fallback for the voice channel), audioSource, lyricOffsetMs, stayInVoice, ytdlpPath, video (width/height/fps/includeAudio/streamPreview), accent, font, commands (prefix/channels/allowOtherUsers/playlistLimit), cache (audio/video/slides/lyrics), render (out/force). There is no fixed song in the config: the song, its audio and its lyrics all come from what w/play resolves.',
     'Credentials come from .env: DISCORD_TOKEN, SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET, AI_API_URL, AI_API_KEY, AI_MODEL.',
   ].join('\n');
 }

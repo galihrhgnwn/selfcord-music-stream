@@ -1,6 +1,5 @@
 import { PREFIX, COMMANDS, commandsText, compactList, aiContext, helpTopicsText, helpTopicAt } from './features.js';
-import { isSpotifyUrl, spotifyRefFromUrl, getTrack, getCollectionTracks, spotifyConfigured } from './spotify.js';
-import { trackFromQuery } from './track.js';
+import { resolvePlayable, trackFromQuery } from './track.js';
 import { askAI, aiConfigured } from './ai.js';
 import { COMPONENT_INTERACTIONS, helpMenu } from './ui.js';
 
@@ -63,9 +62,24 @@ export function attachCommands({ client, player, cfg, log = console.log }) {
     };
   }
 
-  function voiceTarget(msg) {
-    const ch = msg.member?.voice?.channel || msg.guild?.members?.me?.voice?.channel || null;
-    return ch;
+  /**
+   * The voice channel to stream into: the one the user who typed the command
+   * is sitting in, whoever that is. The message's cached member can be missing
+   * or stale (another user, an uncached guild), so fall back to a fresh member
+   * fetch, then to the account's own channel. config.channelId is only used
+   * when nobody is in a voice channel at all.
+   */
+  async function voiceTarget(msg) {
+    const authorId = msg.author?.id || msg.author?.user?.id || null;
+    const authorVoice = msg.member?.voice?.channel || null;
+    if (authorVoice) return authorVoice;
+
+    const guild = msg.guild || (msg.guildId ? client.guilds?.cache?.get(String(msg.guildId)) : null);
+    if (guild && authorId) {
+      const member = await guild.members.fetch(authorId).catch(() => null);
+      if (member?.voice?.channel) return member.voice.channel;
+    }
+    return msg.guild?.members?.me?.voice?.channel || null;
   }
 
   function rememberHelpMessage(channelId, messageId) {
@@ -91,39 +105,13 @@ export function attachCommands({ client, player, cfg, log = console.log }) {
     return !!ts && Date.now() - ts <= HELP_TTL;
   }
 
-  /**
-   * Turn the command argument into the list of tracks to play.
-   *
-   *  - a Spotify track link      -> that one track
-   *  - a Spotify album/playlist  -> every track it holds, played in order
-   *  - plain text                -> the most popular match, so a shared title
-   *    plays the version people actually listen to
-   */
-  async function resolveRequest(arg) {
-    if (isSpotifyUrl(arg)) {
-      if (!spotifyConfigured()) throw new Error('a Spotify link needs SPOTIFY_CLIENT_ID & SPOTIFY_CLIENT_SECRET in .env');
-      const ref = spotifyRefFromUrl(arg);
-      if (!ref) throw new Error('unrecognized Spotify link, use a track, album or playlist link');
-      if (ref.type === 'track') return { tracks: [await getTrack(ref.id)] };
-
-      const cap = Number(cfg.commands?.playlistLimit) || 30;
-      const collection = await getCollectionTracks(arg, { cap });
-      if (!collection.tracks.length) throw new Error(`that ${collection.kind} has no playable tracks`);
-      return {
-        tracks: collection.tracks,
-        collection: `${collection.kind} "${collection.name}" (${collection.tracks.length} tracks)`,
-      };
-    }
-
-    const track = await trackFromQuery(arg);
-    return { tracks: [track], synthetic: Boolean(track.synthetic) };
-  }
-
   async function startPlayback(msg, tracks, status) {
     const list = Array.isArray(tracks) ? tracks : [tracks];
-    const target = voiceTarget(msg);
+    const target = await voiceTarget(msg);
     const channel = target || (cfg.channelId ? await client.channels.fetch(cfg.channelId).catch(() => null) : null);
-    if (!channel) throw new Error('you are not in a voice channel, and no default channelId is usable either');
+    if (!channel) {
+      throw new Error('you are not in a voice channel: join one first, or set channelId in config.json as a fallback');
+    }
     const guildId = channel.guildId || msg.guildId || cfg.guildId;
 
     // one token for the whole run: w/stop bumps it and this loop gives up
@@ -177,7 +165,7 @@ export function attachCommands({ client, player, cfg, log = console.log }) {
     }
     const status = await statusMessage(msg, 'looking for the song...');
     try {
-      const req = await resolveRequest(arg);
+      const req = await resolvePlayable(arg, { cap: Number(cfg.commands?.playlistLimit) || 30 });
       if (req.synthetic) status.edit('Spotify is not configured, searching yt-dlp directly');
       if (req.collection) status.edit(`${req.collection}\nqueued, starting the first track...`);
       await startPlayback(msg, req.tracks, status);
@@ -200,7 +188,7 @@ export function attachCommands({ client, player, cfg, log = console.log }) {
     if (!player.state.track) return say(msg, '❌ no song is playing right now');
     const st = await statusMessage(msg, '⏱️ shifting the lyric timing...');
     const { prev, next, replay } = await player.nudge(ms);
-    const target = voiceTarget(msg);
+    const target = await voiceTarget(msg);
     await st.edit(`lyric offset: ${prev}ms -> **${next}ms**\nrebuilding the video now (slides are cached, so this is fast)...`);
     replay({
       track: player.state.track,
@@ -334,6 +322,6 @@ export function attachCommands({ client, player, cfg, log = console.log }) {
     prefix,
     handleMessage,
     /** used by CLI mode: run a single command without Discord */
-    _internals: { resolveRequest, startPlayback, voiceTarget, isHelpReply, handleComponent }, 
+    _internals: { resolvePlayable, startPlayback, voiceTarget, isHelpReply, handleComponent }, 
   };
 }
